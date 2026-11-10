@@ -1,0 +1,263 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{db}/documents {
+    // ================================================================
+    // IDENTIDAD Y ROLES
+    // ================================================================
+    function signedIn() {
+      return request.auth != null && request.auth.token.email != null;
+    }
+
+    function em() {
+      return signedIn() ? request.auth.token.email.lower() : '';
+    }
+
+    function dom() {
+      return signedIn()
+        && request.auth.token.email_verified == true
+        && em().matches('.*@ibime[.]edu[.]mx');
+    }
+
+    function isAdminEmail() {
+      return dom() && em() == 'josue.jain@ibime.edu.mx';
+    }
+
+    function hasProfile() {
+      return dom()
+        && exists(/databases/$(db)/documents/docentes/$(em()));
+    }
+
+    function profile() {
+      return get(/databases/$(db)/documents/docentes/$(em())).data;
+    }
+
+    function activeProfile() {
+      return hasProfile()
+        && profile().get('bloqueado', false) != true;
+    }
+
+    function admin() {
+      return isAdminEmail()
+        || (activeProfile()
+          && profile().get('rol', '') is string
+          && profile().get('rol', '').lower() == 'admin');
+    }
+
+    function isDirectivo() {
+      return activeProfile()
+        && profile().get('rol', '') is string
+        && profile().get('rol', '').lower() == 'directivo';
+    }
+
+    // El admin conserva las capacidades completas. Los docentes pueden
+    // consultar los datos académicos necesarios para su propio panel y carga.
+    function docente() {
+      return activeProfile()
+        && profile().get('rol', '') is string
+        && profile().get('rol', '').lower() in ['docente', 'admin'];
+    }
+
+    // Lista unificada de privilegios del directivo. Soporta "permisos" (actual) y
+    // "privilegios" (compatibilidad). Usa .get(campo, default): si un perfil solo
+    // tiene uno de los dos campos NO se produce error (antes, el campo faltante
+    // hacía fallar toda la regla y el directivo recibía "permisos insuficientes").
+    // Un directivo nunca obtiene escritura: los privilegios son solo de lectura.
+    function permisosDe() {
+      let a = profile().get('permisos', []);
+      let b = profile().get('privilegios', []);
+      return (a is list ? a : []).concat(b is list ? b : []);
+    }
+
+    function privilege(p) {
+      return admin()
+        || (isDirectivo() && p in permisosDe());
+    }
+
+    // Directivo con al menos uno de los privilegios indicados.
+    function anyPriv(ps) {
+      return admin()
+        || (isDirectivo() && permisosDe().hasAny(ps));
+    }
+
+    function ownDocente(id) {
+      return dom() && em() == id.lower();
+    }
+
+    // El alumno solo puede consultar lo que está ligado a su propio correo
+    // institucional (id del documento en /alumnos y campo correo en calificaciones).
+    function ownAlumno(id) {
+      return dom() && em() == id.lower();
+    }
+
+    // Un correo que ya está dado de alta como alumno no puede autoregistrarse
+    // como docente desde el portal de docentes.
+    function esAlumnoRegistrado() {
+      return exists(/databases/$(db)/documents/alumnos/$(em()));
+    }
+
+    // Directivo con al menos un privilegio: puede leer los catálogos básicos
+    // (docentes, grupos, asignaturas) para mostrar nombres en sus pantallas.
+    function hasAnyPrivilege() {
+      return isDirectivo() && permisosDe().size() > 0;
+    }
+
+    // Datos generales (dashboard): quien ve cualquiera de estos módulos necesita
+    // leer asignaciones, avance, calificaciones y alumnos para poblarlos.
+    function canSeeGeneralData() {
+      return anyPriv(['dashboardGeneral', 'docentes', 'cargas', 'avance', 'asignaciones']);
+    }
+
+    // ================================================================
+    // DOCENTES
+    // ================================================================
+    match /docentes/{id} {
+      allow read: if admin()
+        || hasAnyPrivilege()
+        || ownDocente(id);
+
+      // El alumno consulta (solo por id, sin listar) nombre y foto de sus
+      // docentes para identificarlos en su panel.
+      allow get: if dom();
+
+      // Permite que un docente cree su propio perfil al iniciar sesión por
+      // primera vez. El administrador puede crear/editar cualquier perfil.
+      allow create: if admin()
+        || (ownDocente(id)
+          && !esAlumnoRegistrado()
+          && request.resource.data.correo == em()
+          && request.resource.data.rol is string
+          && request.resource.data.rol.lower() == 'docente');
+
+      // Un docente solo puede actualizar su propio perfil sin cambiar su rol
+      // ni su correo. Los cambios de directivo/admin quedan para el admin.
+      allow update: if admin()
+        || (ownDocente(id)
+          && resource.data.rol is string
+          && request.resource.data.rol is string
+          && resource.data.rol.lower() == 'docente'
+          && request.resource.data.rol.lower() == 'docente'
+          && request.resource.data.correo == em());
+
+      allow delete: if admin();
+    }
+
+    // ================================================================
+    // CONFIG (banderas del portal, p. ej. modo ligero)
+    // ================================================================
+    match /config/{id} {
+      allow read: if dom();
+      allow write: if admin();
+    }
+
+    // ================================================================
+    // GRUPOS
+    // ================================================================
+    match /grupos/{id} {
+      allow read: if docente() || hasAnyPrivilege();
+
+      // Alta, edición y borrado de grupos solamente desde Admin.
+      allow write: if admin();
+    }
+
+    // ================================================================
+    // ASIGNATURAS
+    // ================================================================
+    match /asignaturas/{id} {
+      allow read: if docente() || hasAnyPrivilege();
+
+      allow write: if admin();
+    }
+
+    // ================================================================
+    // ALUMNOS
+    // ================================================================
+    match /alumnos/{id} {
+      allow read: if docente()
+        || canSeeGeneralData()
+        || anyPriv(['alumnos', 'verAlumno'])
+        || ownAlumno(id);
+
+      // El alumno se identifica por el campo correo, que coincide con el id
+      // del documento. No se exige ultimoDocente para permitir que un mismo
+      // alumno pueda ser actualizado por distintos docentes.
+      allow create, update: if admin()
+        || (docente()
+          && request.resource.data.correo == id);
+
+      // El alumno solo puede actualizar su propia foto de perfil de Google.
+      allow update: if ownAlumno(id)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['foto']);
+
+      allow delete: if admin();
+    }
+
+    // ================================================================
+    // ASIGNACIONES
+    // ================================================================
+    match /asignaciones/{id} {
+      allow read: if admin()
+        || canSeeGeneralData()
+        || (docente() && resource.data.docente == em());
+
+      allow create: if admin()
+        || (docente() && request.resource.data.docente == em());
+
+      allow update: if admin()
+        || (docente()
+          && resource.data.docente == em()
+          && request.resource.data.docente == em());
+
+      allow delete: if admin()
+        || (docente() && resource.data.docente == em());
+    }
+
+    // ================================================================
+    // AVANCE
+    // ================================================================
+    match /avance/{id} {
+      allow read: if admin()
+        || canSeeGeneralData()
+        || (docente() && resource.data.docente == em());
+
+      allow create: if admin()
+        || (docente() && request.resource.data.docente == em());
+
+      allow update: if admin()
+        || (docente()
+          && resource.data.docente == em()
+          && request.resource.data.docente == em());
+
+      allow delete: if admin()
+        || (docente() && resource.data.docente == em());
+    }
+
+    // ================================================================
+    // CALIFICACIONES
+    // ================================================================
+    match /calificaciones/{id} {
+      allow read: if admin()
+        || canSeeGeneralData()
+        || (docente() && resource.data.docente == em())
+        || privilege('verAlumno')
+        // Panel del alumno: solo los registros con su correo institucional.
+        || (dom() && resource.data.correo == em());
+
+      allow create: if admin()
+        || (docente()
+          && request.resource.data.docente == em()
+          && request.resource.data.calif is number
+          && request.resource.data.calif >= 0
+          && request.resource.data.calif <= 10);
+
+      allow update: if admin()
+        || (docente()
+          && resource.data.docente == em()
+          && request.resource.data.docente == em()
+          && request.resource.data.calif is number
+          && request.resource.data.calif >= 0
+          && request.resource.data.calif <= 10);
+
+      allow delete: if admin();
+    }
+  }
+}
