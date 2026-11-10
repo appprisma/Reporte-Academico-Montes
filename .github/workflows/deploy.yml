@@ -11,7 +11,11 @@ jobs:
       - name: Deploy a Firebase
         env:
           SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          PROJECT: ${{ vars.FIREBASE_PROJECT }}
         run: |
-          echo "$SA" > "$HOME/sa.json"
+          if [ -z "$SA" ]; then echo "Falta el secret FIREBASE_SERVICE_ACCOUNT"; exit 1; fi
+          if [ -z "$PROJECT" ]; then echo "Falta la variable FIREBASE_PROJECT"; exit 1; fi
+          printf '%s' "$SA" > "$HOME/sa.json"
+          python3 -c "import json,os; d=json.load(open(os.environ['HOME']+'/sa.json')); print('Llave de:', d['client_email'])"
           export GOOGLE_APPLICATION_CREDENTIALS="$HOME/sa.json"
-          npx -y firebase-tools deploy --only hosting,firestore:rules --project "${{ vars.FIREBASE_PROJECT }}"
+          npx -y firebase-tools deploy --only hosting,firestore:rules --project "$PROJECT"
