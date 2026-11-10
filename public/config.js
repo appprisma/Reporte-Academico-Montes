@@ -4,9 +4,8 @@ export const CONFIG = {
   projectId: "reporte-academico-p2-montes",
   appId: "1:501984484756:web:f954af8a079d3eb1c1c381"
 };
-
 export const BRIDGE_URL =
-  "https://script.google.com/macros/s/AKfycbx30caylMsHeNiqx8hK0xqU_NfRRIDO4Bn3C_z0s4XI29A0QqWW0Yr3j9-rcu_2ezYdqg/exec";
+  "https://script.google.com/macros/s/AKfycbybBJG4uCDe4nsw-VjUZP20Ka3UkHA8GLdtYWVsnTEeHTFq2KuPWXHa9AAkdZL3l4BM/exec";
 
 export const ADMIN_EMAIL = "josue.jain@ibime.edu.mx";
 
