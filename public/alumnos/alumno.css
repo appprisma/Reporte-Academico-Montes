@@ -34,6 +34,7 @@
 .al-stats b.n-atencion{color:var(--atencion)}
 .al-stats b.n-satisfactorio{color:var(--satisf)}
 .al-stats b.n-excelente{color:var(--excel)}
+.al-stats b.n-texto{font-size:18px;line-height:1.25}
 
 /* ---------- Tarjetas genéricas ---------- */
 .al-card{background:var(--surface);border:1px solid var(--border);border-radius:18px;box-shadow:var(--shadow-sm);padding:28px;text-align:center;color:var(--muted)}
@@ -158,6 +159,7 @@ body:not(:has(#login)) .brand-copy strong{color:var(--brand)}
   .cards.al-stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
   .cards.al-stats>div{padding:14px}
   .cards.al-stats b{font-size:25px}
+  .cards.al-stats b.n-texto{font-size:16px}
   .cards.al-stats span{font-size:12px}
 }
 
