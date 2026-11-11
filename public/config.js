@@ -8,7 +8,7 @@ export const CONFIG = {
 };
 
 export const BRIDGE_URL =
-  "https://script.google.com/macros/s/AKfycbyusN895idFnBYlWokwNYlInBnbl53uh03X0DWmxLVEifjCEk5smMyhEFQe2ouwc8j_zg/exec";
+  "https://script.google.com/a/macros/ibime.edu.mx/s/AKfycbxEJdMSlcQ-A-6-PasNrlfGDgGF7x2UORojOcb4251onNTFf8Ba2KYV-RH96QIQEWR-Qw/exec";
 
 export const ADMIN_EMAIL = "josue.jain@ibime.edu.mx";
 
