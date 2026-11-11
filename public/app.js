@@ -38,7 +38,8 @@ const canOpen = k => me?.rol === 'admin' || ({
   docentes: hasPriv('docentes'),
   gruposES: hasPriv('grupos'),
   gruposEN: hasPriv('grupos'),
-  asignaturas: hasPriv('asignaturas'),
+  asignaturasES: hasPriv('asignaturas'),
+  asignaturasEN: hasPriv('asignaturas'),
   alumnos: hasPriv('alumnos'),
   asignaciones: hasPriv('asignaciones'),
   avance: hasPriv('avance'),
@@ -52,7 +53,8 @@ const TABS = {
   docentes: { n: 'Docentes', col: 'docentes', f: ['correo', 'nombre', 'matricula', 'rol'], key: 'correo', def: { rol: 'docente' }, types: { rol: ['docente', 'directivo', 'admin'] } },
   gruposES: { n: 'Grupos español', col: 'grupos', f: ['nombre'], fix: { tipo: 'ESPAÑOL' }, w: ['tipo', '==', 'ESPAÑOL'], key: 'nombre' },
   gruposEN: { n: 'Grupos inglés', col: 'grupos', f: ['nombre'], fix: { tipo: 'INGLES' }, w: ['tipo', '==', 'INGLES'], key: 'nombre' },
-  asignaturas: { n: 'Asignaturas', col: 'asignaturas', f: ['nombre', 'tipo'], key: 'nombre', types: { tipo: ['ESPAÑOL', 'INGLES'] } },
+  asignaturasES: { n: 'Asignaturas español', col: 'asignaturas', f: ['nombre'], fix: { tipo: 'ESPAÑOL' }, key: 'nombre' },
+  asignaturasEN: { n: 'Asignaturas inglés', col: 'asignaturas', f: ['nombre'], fix: { tipo: 'INGLES' }, key: 'nombre' },
   alumnos: { n: 'Alumnos', col: 'alumnos', f: ['matricula', 'nombre', 'correo', 'grupoEspanol', 'grupoIngles', 'tutor'], key: 'correo' },
   asignaciones: { n: 'Asignaciones', col: 'asignaciones', f: ['docente', 'grupo', 'materia', 'tipo', 'url'], key: null },
   avance: { n: 'Avance', col: 'avance', f: ['docente', 'nombre', 'grupo', 'asignatura', 'filas', 'alumnos', 'url', 'estado'], key: null, def: { estado: 'CARGADO' } }
@@ -148,7 +150,7 @@ function menu() {
     if (hasPriv('asignaciones')) items.push(['asignaciones', 'Asignaciones']);
     if (hasPriv('avance')) items.push(['avance', 'Avance general']);
     if (hasPriv('grupos')) items.push(['gruposES', 'Grupos español'], ['gruposEN', 'Grupos inglés']);
-    if (hasPriv('asignaturas')) items.push(['asignaturas', 'Asignaturas']);
+    if (hasPriv('asignaturas')) items.push(['asignaturasES', 'Asignaturas español'], ['asignaturasEN', 'Asignaturas inglés']);
     if (hasPriv('alumnos')) items.push(['alumnos', 'Alumnos']);
     if (hasPriv('verAlumno')) items.push(['verAlumno', 'Ver como alumno']);
   } else {
@@ -410,7 +412,7 @@ async function vistaDashboard() {
       ['cargasPanel','Registros importados',registros,'Detalle de registros'],
       ['alumnos','Alumnos detectados',alumnosDetectados.size,'Catálogo de alumnos'],
       ['avance','Calificaciones',d.califsTotal,'Avance y resultados'],
-      ['asignaturas','Asignaturas',d.mats.length,'Catálogo de materias']
+      ['asignaturasES','Asignaturas',d.mats.length,'Catálogo de materias']
     ];
     const cardHtml=cards.filter(([go])=>canOpen(go)).map(([go,label,value,sub])=>
       `<button class="dash-card" data-go="${go}" type="button"><b>${value}</b><span>${esc(label)}</span><small>${esc(sub)}</small><i>›</i></button>`).join('');
@@ -486,13 +488,26 @@ async function vistaImportar() {
   const add = (g = '', m = '', u = '', tipo = '') => {
     const d = document.createElement('div'); d.className = 'fila carga-row';
     d.innerHTML = `<select class="tipo"><option value="">TIPO</option><option value="ESPAÑOL" ${String(tipo).toUpperCase()==='ESPAÑOL'?'selected':''}>ESPAÑOL</option><option value="INGLES" ${String(tipo).toUpperCase()==='INGLES'?'selected':''}>INGLES</option></select>
-      <select class="g"><option value="">Grupo</option></select><select class="m"><option value="">Materia</option>${options(mats.map(x => x.nombre),m)}</select>
+      <select class="g"><option value="">Grupo</option></select><select class="m"><option value="">Materia</option></select>
       <input class="u" placeholder="Pegar enlace de Google Sheets" value="${esc(u)}"><button class="danger quitar">Quitar</button>`;
     $('filas').append(d);
+    // Grupos y materias dependen del tipo elegido y se muestran en orden numérico/alfabético.
+    // En la primera pintada se conservan los valores ya guardados aunque no estén en el catálogo.
+    let primera = true;
     const sync = () => {
-      const tg = d.querySelector('.tipo').value;
-      const gs = grupos.filter(x => String(x.tipo || '').toUpperCase() === String(tg || '').toUpperCase()).map(x => x.nombre);
-      d.querySelector('.g').innerHTML = `<option value="">Grupo</option>${options(gs,g)}`;
+      const tg = String(d.querySelector('.tipo').value || '').toUpperCase();
+      const keepG = primera ? g : '', keepM = primera ? m : '';
+      primera = false;
+      const gs = [...new Set(grupos.filter(x => tg && String(x.tipo || '').toUpperCase() === tg).map(x => x.nombre))];
+      const ms = [...new Set(mats.filter(x => {
+        const tx = String(x.tipo || '').toUpperCase().replace('INGLÉS', 'INGLES');
+        return tg && (!tx || tx === tg);
+      }).map(x => x.nombre))];
+      if (keepG && !gs.includes(keepG)) gs.push(keepG);
+      if (keepM && !ms.includes(keepM)) ms.push(keepM);
+      gs.sort(sortText); ms.sort(sortText);
+      d.querySelector('.g').innerHTML = `<option value="">Grupo</option>${options(gs, keepG)}`;
+      d.querySelector('.m').innerHTML = `<option value="">Materia</option>${options(ms, keepM)}`;
     };
     d.querySelector('.tipo').onchange = sync;
     d.querySelector('.quitar').onclick = () => d.remove();
@@ -619,6 +634,12 @@ async function importar(){
 }
 
 
+// ID del documento de catálogo por clave. Las asignaturas de INGLES llevan sufijo para poder
+// repetir el nombre de una de ESPAÑOL; las de español conservan su ID anterior (no se duplican).
+function idClave(t, o){
+  const base = String(o[t.key] || '').toLowerCase().trim();
+  return (base && t.col === 'asignaturas' && String(o.tipo || '').toUpperCase() === 'INGLES') ? base + '__ingles' : base;
+}
 async function guardar(t, objs){
   invalidar();
   for(let i=0;i<objs.length;i+=450){
@@ -626,7 +647,7 @@ async function guardar(t, objs){
     objs.slice(i,i+450).forEach(raw=>{
       let o=normalizarGuardado({...t.def,...raw,...t.fix});
       const existingId=o._id; delete o._id;
-      const id=existingId || (t.key ? (t.col === 'grupos' ? hash([o.nombre, o.tipo].map(v=>String(v||'').trim().toUpperCase()).join('|')) : String(o[t.key]||'').toLowerCase().trim()) : hash(t.f.map(f=>o[f]??'').join('|')+(t.fix?.tipo??'')));
+      const id=existingId || (t.key ? (t.col === 'grupos' ? hash([o.nombre, o.tipo].map(v=>String(v||'').trim().toUpperCase()).join('|')) : idClave(t,o)) : hash(t.f.map(f=>o[f]??'').join('|')+(t.fix?.tipo??'')));
       if(!id)return;
       if(t.key && t.key !== 'correo') o[t.key]=String(o[t.key]||'').trim().toUpperCase();
       b.set(doc(db,t.col,id),o,{merge:true});
@@ -646,7 +667,7 @@ function formFields(t, data={}){
   }).join('');
 }
 
-function esCargaMasiva(k) { return ['docentes', 'gruposES', 'gruposEN', 'asignaturas', 'alumnos'].includes(k); }
+function esCargaMasiva(k) { return ['docentes', 'gruposES', 'gruposEN', 'asignaturasES', 'asignaturasEN', 'alumnos'].includes(k); }
 function maxBulkRows(k) { return k === 'docentes' ? 50 : 500; }
 function normalizarFilaDocente(r) {
   const rol = String(r.rol ?? 'docente').trim().toLowerCase();
@@ -739,7 +760,7 @@ function parsearPegado(k, texto) {
       rows.push({ nombre: c[0], tipo: ['INGLES', 'INGLÉS'].includes(String(tipo).toUpperCase()) ? 'INGLES' : String(tipo).toUpperCase() });
     } else {
       if (!c[0]) continue;
-      if (/^(nombre|grupo)$/i.test(c[0])) continue;
+      if (/^(nombre|grupo|materia|asignatura)$/i.test(c[0])) continue;
       rows.push({ nombre: c[0] });
     }
   }
@@ -757,7 +778,7 @@ function renderBulkEditor(k, rows, existing) {
   if (!editor) return;
   if (rows.length > maxBulkRows(k)) return alert(`El máximo para esta carga es ${maxBulkRows(k)} filas.`);
   const fields = k === 'docentes' ? ['correo','nombre','rol','foto'] : k === 'asignaturas' ? ['nombre', 'tipo'] : k === 'alumnos' ? ['matricula','nombre','correo','grupoEspanol','grupoIngles','tutor'] : ['nombre'];
-  const labels = {matricula:'Matrícula',nombre:k==='asignaturas'?'Materia':'Nombre',correo:'Correo',grupoEspanol:'Grupo Español',grupoIngles:'Grupo Inglés',tutor:'Tutor',tipo:'Tipo',rol:'Rol',foto:'Foto URL'};
+  const labels = {matricula:'Matrícula',nombre:k.startsWith('asignaturas')?'Materia':'Nombre',correo:'Correo',grupoEspanol:'Grupo Español',grupoIngles:'Grupo Inglés',tutor:'Tutor',tipo:'Tipo',rol:'Rol',foto:'Foto URL'};
   const state = rows.slice(0, maxBulkRows(k)).map((r, i) => ({ ...r, _i: i, _remove: false }));
   const duplicateFor = r => {
     if (k === 'alumnos') return alumnoDup(r, existing);
@@ -773,7 +794,7 @@ function renderBulkEditor(k, rows, existing) {
     const duplicateExisting = duplicateFor(r), duplicatePaste = duplicatePasteFor(r), duplicate = duplicateExisting || duplicatePaste;
     const motivo = duplicateExisting ? 'YA EXISTE' : (duplicatePaste ? 'REPETIDA EN EL PEGADO/ARCHIVO' : '');
     return `<tr class="bulk-row ${duplicate ? 'duplicate' : ''}" data-i="${r._i}">
-      <td>${r._i + 1}</td>${fields.map(f => `<td><input class="bulk-input" data-f="${f}" value="${esc(r[f] || '')}" ${f === 'tipo' ? 'list="tipos-materia"' : f === 'rol' ? 'list="roles-docente"' : ''}></td>`).join('')}
+      <td>${r._i + 1}</td>${fields.map(f => `<td>${f === 'tipo' ? (() => { const t0 = String(r.tipo || '').toUpperCase().replace('INGLÉS', 'INGLES'); return `<select class="bulk-input" data-f="tipo">${['ESPAÑOL', 'INGLES'].includes(t0) ? '' : '<option value="" selected>Selecciona</option>'}${['ESPAÑOL', 'INGLES'].map(o => `<option value="${o}" ${t0 === o ? 'selected' : ''}>${o}</option>`).join('')}</select>`; })() : `<input class="bulk-input" data-f="${f}" value="${esc(r[f] || '')}" ${f === 'rol' ? 'list="roles-docente"' : ''}>`}</td>`).join('')}
       <td>${duplicate ? `<span class="bulk-warning">⚠ ${esc(motivo)}</span>` : '<span class="bulk-ok">✓ NUEVO' + (k==='alumnos' ? ' · LISTO' : '') + '</span>'}</td><td><button type="button" class="danger bulk-remove" data-i="${r._i}">Eliminar</button></td></tr>`;
   }).join('');
   const colspan = fields.length + 3;
@@ -852,6 +873,8 @@ async function vistaTab(k) {
   let rows=ds.map(d=>({id:d.id,...d.data()}));
   if(k==='gruposES') rows=rows.filter(r=>String(r.tipo||'').toUpperCase()==='ESPAÑOL');
   if(k==='gruposEN') rows=rows.filter(r=>String(r.tipo||'').toUpperCase()==='INGLES');
+  if(k==='asignaturasES') rows=rows.filter(r=>!r.tipo||String(r.tipo).toUpperCase()==='ESPAÑOL');
+  if(k==='asignaturasEN') rows=rows.filter(r=>String(r.tipo||'').toUpperCase().replace('INGLÉS','INGLES')==='INGLES');
   const sortField = k==='alumnos' ? 'nombre' : (k==='docentes' ? 'nombre' : 'nombre');
   rows.sort((a,b)=>sortText(a[sortField],b[sortField]));
   const bulk=esCargaMasiva(k), alumnoBulk=k==='alumnos', docenteBulk=k==='docentes';
