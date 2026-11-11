@@ -223,7 +223,9 @@ const avatar = (foto, nombre, clase) => foto
 
 function pintar() {
   const { perfil, materias } = estado;
-  const totalAct = materias.reduce((s, m) => s + m.total, 0), hechasAct = materias.reduce((s, m) => s + m.hechas, 0);
+  // Estado general: promedio de los promedios de cada materia (las no hechas cuentan como 0), con los mismos rangos.
+  const promGeneral = materias.length ? materias.reduce((s, m) => s + m.prom, 0) / materias.length : 0;
+  const estadoGeneral = nivel(promGeneral);
   const criticas = materias.reduce((s, m) => s + m.criticas, 0), atencion = materias.reduce((s, m) => s + m.atencion, 0);
 
   const dato = (et, v) => v ? `<div class="al-dato"><small>${et}</small><b>${esc(v)}</b></div>` : '';
@@ -254,7 +256,7 @@ function pintar() {
 
     <div class="cards al-stats">
       <div><b>${materias.length}</b><span>Materias</span></div>
-      <div><b>${hechasAct} de ${totalAct}</b><span>Actividades hechas</span></div>
+      <div><b class="n-${estadoGeneral} n-texto">${ESTADOS[estadoGeneral].etiqueta}</b><span>Estado general</span></div>
       <div><b class="n-atencion">${atencion}</b><span>Actividades por mejorar</span></div>
       <div><b class="n-critico">${criticas}</b><span>Atención prioritaria</span></div>
     </div>
