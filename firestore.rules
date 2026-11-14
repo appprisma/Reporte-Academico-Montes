@@ -174,7 +174,7 @@ service cloud.firestore {
     match /alumnos/{id} {
       allow read: if docente()
         || canSeeGeneralData()
-        || anyPriv(['alumnos', 'verAlumno'])
+        || anyPriv(['alumnos', 'verAlumno', 'kardex'])
         || ownAlumno(id);
 
       // El alumno se identifica por el campo correo, que coincide con el id
@@ -239,6 +239,7 @@ service cloud.firestore {
         || canSeeGeneralData()
         || (docente() && resource.data.docente == em())
         || privilege('verAlumno')
+        || privilege('kardex')
         // Panel del alumno: solo los registros con su correo institucional.
         || (dom() && resource.data.correo == em());
 
