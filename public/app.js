@@ -2,8 +2,9 @@ import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/fireba
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
 import { getFirestore, collection, doc, getDoc, getDocs, setDoc, deleteDoc, query, where, writeBatch, serverTimestamp, arrayUnion, getCountFromServer } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 import { CONFIG, BRIDGE_URL, ADMIN_EMAIL, DOMINIO } from './config.js';
+import { armarKardex, crearPDF, nombreArchivo, slug } from './kardex.js';
 
-const APP_VERSION = '2026.11.10-r8';
+const APP_VERSION = '2026.11.14-r1';
 const app = initializeApp(CONFIG), auth = getAuth(app), db = getFirestore(app);
 const $ = id => document.getElementById(id), main = $('main');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -27,7 +28,8 @@ const PRIVILEGES = {
   grupos: 'Grupos',
   asignaturas: 'Asignaturas',
   alumnos: 'Alumnos',
-  verAlumno: 'Ver como alumno'
+  verAlumno: 'Ver como alumno',
+  kardex: 'Reportes PDF (kárdex)'
 };
 const DIRECTIVO_DEFAULTS = Object.keys(PRIVILEGES);
 const allPrivs = () => Object.keys(PRIVILEGES);
@@ -44,6 +46,7 @@ const canOpen = k => me?.rol === 'admin' || ({
   asignaciones: hasPriv('asignaciones'),
   avance: hasPriv('avance'),
   verAlumno: hasPriv('verAlumno'),
+  kardex: hasPriv('kardex'),
   importar: me?.rol === 'docente' || me?.rol === 'admin',
   misAsignaciones: me?.rol === 'docente',
   miAvance: me?.rol === 'docente'
@@ -142,7 +145,7 @@ const bloqueo = m => { main.innerHTML = `<div id="login"><p class="msg">${esc(m)
 function menu() {
   let items;
   if (me.rol === 'admin') {
-    items = [['dashboard', 'Dashboard'], ['verAlumno', 'Ver como alumno'], ['importar', 'Cargar reportes'], ['cargasPanel', 'Cargas'], ['asignaciones', 'Asignaciones'], ['avance', 'Avance general'], ...Object.keys(TABS).filter(k => !['asignaciones','avance'].includes(k)).map(k => [k, TABS[k].n])];
+    items = [['dashboard', 'Dashboard'], ['verAlumno', 'Ver como alumno'], ['kardex', 'Reportes PDF'], ['importar', 'Cargar reportes'], ['cargasPanel', 'Cargas'], ['asignaciones', 'Asignaciones'], ['avance', 'Avance general'], ...Object.keys(TABS).filter(k => !['asignaciones','avance'].includes(k)).map(k => [k, TABS[k].n])];
   } else if (me.rol === 'directivo') {
     items = [['dashboard', 'Dashboard general']];
     if (hasPriv('docentes')) items.push(['docentes', 'Docentes']);
@@ -153,6 +156,7 @@ function menu() {
     if (hasPriv('asignaturas')) items.push(['asignaturasES', 'Asignaturas español'], ['asignaturasEN', 'Asignaturas inglés']);
     if (hasPriv('alumnos')) items.push(['alumnos', 'Alumnos']);
     if (hasPriv('verAlumno')) items.push(['verAlumno', 'Ver como alumno']);
+    if (hasPriv('kardex')) items.push(['kardex', 'Reportes PDF']);
   } else {
     items = [['dashboard', 'Dashboard'], ['importar', 'Cargar reportes'], ['misAsignaciones', 'Mis asignaciones'], ['miAvance', 'Mi avance']];
   }
@@ -174,6 +178,7 @@ function ir(k) {
     : k === 'asignaciones' ? vistaAsignacionesGeneral
     : k === 'avance' ? vistaAvanceGeneral
     : k === 'verAlumno' ? vistaVerAlumno
+    : k === 'kardex' ? vistaKardex
     : () => vistaTab(k);
   return Promise.resolve().then(action).catch(e => {
     console.error('Error en la vista', k, e);
@@ -1128,6 +1133,140 @@ async function vistaVerAlumno() {
   };
   $('vaIr').onclick = abrir;
   $('vaCorreo').onkeydown = e => { if (e.key === 'Enter') abrir(); };
+}
+
+// ============================================================================
+//  REPORTES PDF (KÁRDEX) · solo admin y directivos con privilegio "kardex"
+//  Una hoja carta por alumno. Por grupo: un PDF con todos + ZIP con individuales.
+// ============================================================================
+const LIBS_PDF = { jspdf: 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js', jszip: 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js' };
+const cargarScript = src => new Promise((ok, ko) => {
+  const s = document.createElement('script'); s.src = src; s.onload = ok;
+  s.onerror = () => ko(new Error('No se pudo cargar una librería necesaria (' + src.split('/').pop() + '). Revisa tu conexión.'));
+  document.head.appendChild(s);
+});
+const libPDF = async () => { if (!window.jspdf) await cargarScript(LIBS_PDF.jspdf); return window.jspdf.jsPDF; };
+const libZip = async () => { if (!window.JSZip) await cargarScript(LIBS_PDF.jszip); return window.JSZip; };
+let logoKx = null;
+async function logoPDF() {
+  if (logoKx) return logoKx;
+  const blob = await (await fetch('assets/logo-ibime-reporte.png')).blob();
+  const dataUrl = await new Promise(r => { const f = new FileReader(); f.onload = () => r(f.result); f.readAsDataURL(blob); });
+  const img = await new Promise((ok, ko) => { const i = new Image(); i.onload = () => ok(i); i.onerror = ko; i.src = dataUrl; });
+  return logoKx = { dataUrl, w: img.naturalWidth, h: img.naturalHeight };
+}
+const kxCache = { filas: new Map(), docentes: null };
+async function docentesKx() {
+  if (kxCache.docentes) return kxCache.docentes;
+  const m = new Map();
+  try { (await getDocs(collection(db, 'docentes'))).docs.forEach(d => m.set(normEmail(d.id), d.data())); } catch (e) { console.warn('Sin lectura de docentes', e); }
+  return kxCache.docentes = m;
+}
+async function filasKx(correos, progreso) {
+  const faltan = correos.filter(c => !kxCache.filas.has(c));
+  for (let i = 0; i < faltan.length; i += 30) {
+    const chunk = faltan.slice(i, i + 30);
+    const snap = await getDocs(query(collection(db, 'calificaciones'), where('correo', 'in', chunk)));
+    chunk.forEach(c => kxCache.filas.set(c, []));
+    snap.docs.forEach(d => { const r = d.data(), c = normEmail(r.correo); if (kxCache.filas.has(c)) kxCache.filas.get(c).push(r); });
+    progreso?.(Math.min(i + 30, faltan.length), faltan.length);
+  }
+}
+const descargarBlob = (blob, nombre) => {
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = nombre;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+};
+
+async function vistaKardex() {
+  let lista = [], sinPermiso = false;
+  try { lista = (await getDocs(collection(db, 'alumnos'))).docs.map(d => ({ id: d.id, ...d.data() })); }
+  catch (e) { sinPermiso = e?.code === 'permission-denied'; console.warn('No se pudo leer alumnos', e); }
+  lista.sort((a, b) => sortText(a.nombre || a.correo || a.id, b.nombre || b.correo || b.id));
+  main.innerHTML = `<div class="section-head"><div><h2>Reportes PDF (kárdex)</h2><p>Genera el reporte académico de actividades para entregar a padres de familia: una sola hoja por alumno, lista para imprimir.</p></div></div>
+    <div class="editor">
+      ${sinPermiso ? '<p class="msg">Tu perfil no puede leer la lista de alumnos. Pide al administrador el privilegio de reportes PDF.</p>' : ''}
+      <div class="tools va-filtros"><input id="kxBuscar" placeholder="Buscar nombre, matrícula o correo..." autocomplete="off"><select id="kxGrado" aria-label="Grado"></select><select id="kxGrupo" aria-label="Grupo"></select></div>
+      <div class="form-grid">
+        <label>Periodo o ciclo (opcional, aparece en el encabezado)<input id="kxPeriodo" placeholder="Ej. Ciclo escolar 2026-2027 · Corte noviembre" maxlength="60"></label>
+      </div>
+      <div class="kx-opts">
+        <label class="kx-check"><input type="checkbox" id="kxProm"> Mostrar promedio numérico por materia</label>
+        <label class="kx-check"><input type="checkbox" id="kxFirmas" checked> Incluir observaciones y líneas de firma</label>
+      </div>
+      <p class="filtro-cuenta" id="kxCuenta"></p>
+      <div class="actions">
+        <button class="p" id="kxGrupoPdf" type="button">Descargar PDF del grupo (todos)</button>
+        <button id="kxZip" type="button">Descargar ZIP (individuales + grupo)</button>
+        <button id="kxRefrescar" type="button">Actualizar datos</button>
+      </div>
+      <p class="msg" id="kxMsg" hidden></p>
+      <div class="va-lista" id="kxLista"></div>
+    </div>`;
+  const MAX = 150;
+  const filtro = () => ({ term: $('kxBuscar').value.trim(), grado: $('kxGrado').value, grupo: $('kxGrupo').value });
+  const visibles = () => lista.filter(a => coincideAlumno(a, filtro()));
+  const msg = (t, err = false) => { const m = $('kxMsg'); m.hidden = !t; m.textContent = t || ''; m.style.color = err ? '' : 'var(--brand)'; };
+  const ocupado = v => ['kxGrupoPdf', 'kxZip', 'kxRefrescar'].forEach(id => $(id).disabled = v);
+  const pintar = () => {
+    const hits = visibles();
+    $('kxCuenta').textContent = lista.length ? `${hits.length} de ${lista.length} alumnos${hits.length > MAX ? ` · mostrando los primeros ${MAX} (el PDF incluye a todos los ${hits.length})` : ''}` : '';
+    $('kxLista').innerHTML = hits.slice(0, MAX).map(a => `<div class="va-item kx-row"><strong>${esc(a.nombre || a.correo || a.id)}</strong><span>${esc(a.correo || a.id)}</span><small>${esc([a.matricula, ...gruposAlumno(a)].filter(Boolean).join(' · '))}</small><button type="button" data-kx="${esc(a.id)}">PDF</button></div>`).join('')
+      || `<div class="empty">${lista.length ? 'Ningún alumno coincide con la búsqueda.' : 'No hay alumnos registrados.'}</div>`;
+  };
+  enlazarFiltrosAlumnos(lista, $('kxGrado'), $('kxGrupo'), pintar);
+  $('kxBuscar').oninput = pintar; pintar();
+  $('kxRefrescar').onclick = () => { kxCache.filas.clear(); kxCache.docentes = null; msg('Datos actualizados. Se volverán a leer al generar.'); };
+
+  // Arma los kárdex de una lista de alumnos (lee calificaciones por lotes).
+  const armar = async alumnos => {
+    const correos = alumnos.map(a => normEmail(a.correo || a.id));
+    const [docentes] = await Promise.all([docentesKx(), filasKx(correos, (i, n) => msg(`Leyendo calificaciones… ${i} de ${n} alumnos`))]);
+    return alumnos.map(a => armarKardex(a, kxCache.filas.get(normEmail(a.correo || a.id)) || [], docentes));
+  };
+  const opciones = async () => ({ logo: await logoPDF(), periodo: $('kxPeriodo').value.trim(), mostrarPromedio: $('kxProm').checked, firmas: $('kxFirmas').checked });
+  const etiquetaGrupo = () => $('kxGrupo').value || ($('kxGrado').value ? `${$('kxGrado').value}-grado` : 'todos');
+  const correr = async fn => { ocupado(true); try { await fn(); } catch (e) { console.error('Kárdex', e); msg(`No se pudo generar: ${e.code || ''} ${e.message || ''}`.trim(), true); } finally { ocupado(false); } };
+
+  // Individual
+  $('kxLista').onclick = e => {
+    const b = e.target.closest('[data-kx]'); if (!b) return;
+    const a = lista.find(x => x.id === b.dataset.kx); if (!a) return;
+    correr(async () => {
+      msg('Generando PDF…');
+      const [JsPDF, ops] = await Promise.all([libPDF(), opciones()]);
+      const [k] = await armar([a]);
+      const doc = crearPDF(JsPDF, [k], ops);
+      descargarBlob(doc.output('blob'), nombreArchivo(k));
+      msg(`Listo: ${k.perfil.nombre}.`);
+    });
+  };
+  // Grupo completo (un solo PDF, una hoja por alumno, orden alfabético)
+  $('kxGrupoPdf').onclick = () => correr(async () => {
+    const alumnos = visibles(); if (!alumnos.length) return msg('No hay alumnos con ese filtro.', true);
+    if (alumnos.length > 60 && !confirm(`Se generarán ${alumnos.length} hojas. ¿Continuar?`)) return;
+    const [JsPDF, ops] = await Promise.all([libPDF(), opciones()]);
+    const ks = await armar(alumnos); msg('Generando PDF…');
+    const doc = crearPDF(JsPDF, ks, ops);
+    descargarBlob(doc.output('blob'), `Kardex_${slug(etiquetaGrupo())}_completo.pdf`);
+    msg(`Listo: ${ks.length} alumno(s), ${doc.getNumberOfPages()} hoja(s).`);
+  });
+  // ZIP: PDF del grupo + un PDF por alumno
+  $('kxZip').onclick = () => correr(async () => {
+    const alumnos = visibles(); if (!alumnos.length) return msg('No hay alumnos con ese filtro.', true);
+    if (alumnos.length > 60 && !confirm(`Se generarán ${alumnos.length} PDF individuales más el del grupo. ¿Continuar?`)) return;
+    const [JsPDF, JSZip, ops] = await Promise.all([libPDF(), libZip(), opciones()]);
+    const ks = await armar(alumnos), zip = new JSZip(), g = slug(etiquetaGrupo());
+    zip.file(`Kardex_${g}_completo.pdf`, crearPDF(JsPDF, ks, ops).output('arraybuffer'));
+    const usados = new Set();
+    ks.forEach((k, i) => {
+      msg(`Generando individuales… ${i + 1} de ${ks.length}`);
+      let nom = nombreArchivo(k); if (usados.has(nom)) nom = nom.replace('.pdf', `_${i + 1}.pdf`); usados.add(nom);
+      zip.folder('Individuales').file(nom, crearPDF(JsPDF, [k], ops).output('arraybuffer'));
+    });
+    msg('Comprimiendo…');
+    descargarBlob(await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' }), `Kardex_${g}.zip`);
+    msg(`Listo: ZIP con el PDF del grupo y ${ks.length} individual(es).`);
+  });
 }
 
 async function obtenerMisDatos(){

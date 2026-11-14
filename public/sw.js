@@ -1,8 +1,8 @@
-const CACHE = 'ibime-kardex-v11';
+const CACHE = 'ibime-kardex-v12';
 const APP_SHELL = [
-  './', './index.html', './styles.css', './app.js', './config.js', './manifest.webmanifest',
+  './', './index.html', './styles.css', './app.js', './kardex.js', './config.js', './manifest.webmanifest',
   './alumnos/', './alumnos/index.html', './alumnos/alumno.js', './alumnos/alumno.css', './alumnos/manifest.webmanifest',
-  './assets/logo-ibime.png', './assets/favicon-64.png', './assets/apple-touch-icon.png',
+  './assets/logo-ibime.png', './assets/logo-ibime-reporte.png', './assets/favicon-64.png', './assets/apple-touch-icon.png',
   './assets/icon-192.png', './assets/icon-512.png', './assets/icon-maskable-512.png'
 ];
 self.addEventListener('install', event => {
