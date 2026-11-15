@@ -114,18 +114,14 @@ export function armarKardex(alumno, filas, docentes = new Map()) {
   const hechasAct = materias.reduce((s, m) => s + m.hechas, 0);
   const promGeneral = materias.length ? materias.reduce((s, m) => s + m.prom, 0) / materias.length : 0;
 
-  // Actividades calificadas en rango crítico o por mejorar (las más bajas primero).
-  const alertas = [];
-  for (const m of materias) for (const f of m.filas) {
-    if (!f.hecha) continue;
-    const nv = nivel(f.calif);
-    if (nv === 'critico' || nv === 'atencion') alertas.push({ materia: m.nombre, actividad: titleCase(f.actividad, { roman: false }) || 'Actividad', fecha: fmtFecha(f.fecha, f.ts), calif: f.calif, estado: nv });
-  }
-  alertas.sort((a, b) => a.calif - b.calif);
+  // Distribución de todas las actividades por nivel (lo no entregado aparte).
+  const dist = { excelente: 0, satisfactorio: 0, atencion: 0, critico: 0, sinEntregar: 0 };
+  for (const m of materias) for (const f of m.filas) { if (f.hecha) dist[nivel(f.calif)]++; else dist.sinEntregar++; }
 
   return {
-    perfil, materias, alertas,
+    perfil, materias,
     resumen: {
+      dist,
       materias: materias.length,
       totalAct, hechasAct, sinCalificar: totalAct - hechasAct,
       pct: totalAct ? hechasAct / totalAct : 0,
@@ -134,6 +130,19 @@ export function armarKardex(alumno, filas, docentes = new Map()) {
       atencion: materias.reduce((s, m) => s + m.atencion, 0)
     }
   };
+}
+
+// Datos que le faltan al reporte (vacío = completo). Sin calificaciones no cuenta aquí: se trata como descartable.
+export function faltantesKardex(k) {
+  const m = [], { perfil, materias } = k;
+  if (!perfil.matricula) m.push('Sin matrícula');
+  if (!perfil.grupoEs && !perfil.grupoEn) m.push('Sin grupo asignado');
+  if (!perfil.tutor) m.push('Sin tutor registrado');
+  if (k.resumen.totalAct) {
+    if (perfil.grupoEs && !materias.some(x => x.tipo === 'ES')) m.push('Sin calificaciones de español');
+    if (perfil.grupoEn && !materias.some(x => x.tipo === 'EN')) m.push('Sin calificaciones de inglés');
+  }
+  return m;
 }
 
 // ============================================================================
@@ -166,7 +175,7 @@ function pill(doc, texto, cx, cy, w, h, est, size = 6.6) {
 
 export function dibujarKardex(doc, k, opts = {}) {
   const { logo = null, periodo = '', mostrarPromedio = false, firmas = true, emision = new Date() } = opts;
-  const { perfil, materias, alertas, resumen } = k;
+  const { perfil, materias, resumen } = k;
   const fechaEmision = emision.toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' });
 
   // ---------- Encabezado ----------
@@ -203,7 +212,7 @@ export function dibujarKardex(doc, k, opts = {}) {
   const kpis = [
     { v: String(resumen.materias), l: 'MATERIAS', c: BRAND },
     { v: `${resumen.hechasAct} de ${resumen.totalAct}`, l: 'ACTIVIDADES REALIZADAS', c: BRAND },
-    { v: `${Math.round(resumen.pct * 100)}%`, l: 'CUMPLIMIENTO DE ACTIVIDADES', c: BRAND },
+    { v: `${Math.round(resumen.pct * 100)}%`, l: 'ENTREGA DE ACTIVIDADES', c: BRAND },
     { v: resumen.materias ? eg.etiqueta : 'Sin datos', l: mostrarPromedio && resumen.materias ? `ESTADO GENERAL · PROM. ${fmtNota(resumen.promGeneral)}` : 'ESTADO GENERAL', c: resumen.materias ? eg.txt : MUTED }
   ];
   kpis.forEach((p, i) => {
@@ -223,8 +232,8 @@ export function dibujarKardex(doc, k, opts = {}) {
   const ty = 232;
   t(doc, 'Detalle por materia', M, ty + 8, { size: 10, bold: true, color: BRAND });
   const cols = mostrarPromedio
-    ? [['Materia', 142], ['Docente', 112], ['Grupo', 50], ['Hechas', 42], ['Cumplimiento', 82], ['Prom.', 34], ['Estado', 78]]
-    : [['Materia', 156], ['Docente', 122], ['Grupo', 54], ['Hechas', 46], ['Cumplimiento', 90], ['Estado', 72]];
+    ? [['Materia', 142], ['Docente', 112], ['Grupo', 50], ['Hechas', 42], ['Entrega', 82], ['Prom.', 34], ['Estado', 78]]
+    : [['Materia', 156], ['Docente', 122], ['Grupo', 54], ['Hechas', 46], ['Entrega', 90], ['Estado', 72]];
   const xs = []; { let a = M; for (const [, w] of cols) { xs.push(a); a += w; } }
   const hy = ty + 15, hh = 16;
   rect(doc, M, hy, CW, hh, BRAND, { r: 3 });
@@ -233,8 +242,7 @@ export function dibujarKardex(doc, k, opts = {}) {
   const rowsTop = hy + hh + 2;
   const n = Math.max(1, materias.length);
   const avail = footTop - 10 - rowsTop;
-  const unaLinea = 16;
-  const attnWant = alertas.length ? 26 + Math.min(alertas.length, 8) * 12.5 + (alertas.length > 8 ? 11 : 0) : 28;
+  const attnWant = resumen.totalAct ? 140 : 60;
   let rowH = Math.min(22, Math.max(11, (avail - attnWant - 12) / n));
   if (!materias.length) rowH = 30;
   const fs = Math.min(8.4, Math.max(6.2, rowH - 6));
@@ -270,33 +278,53 @@ export function dibujarKardex(doc, k, opts = {}) {
   const tableBottom = rowsTop + (materias.length ? materias.length * rowH : rowH);
   hline(doc, M, W - M, tableBottom + 1);
 
-  // ---------- Actividades por atender ----------
-  let ay = tableBottom + 14;
-  const restante = footTop - 6 - ay;
-  t(doc, 'Actividades por atender', M, ay + 6, { size: 10, bold: true, color: BRAND });
-  const sinTxt = resumen.sinCalificar ? `Sin calificar o no entregadas: ${resumen.sinCalificar}` : 'Sin actividades pendientes';
-  t(doc, sinTxt, W - M, ay + 6, { size: 7.5, bold: true, color: resumen.sinCalificar ? ESTADOS.critico.txt : ESTADOS.excelente.txt, align: 'right' });
-  ay += 13;
-  let finLista = ay + 14;
-  if (!alertas.length) {
-    t(doc, resumen.materias ? 'No hay actividades calificadas en rango crítico ni por mejorar.' : 'Sin información que mostrar.', M, ay + 8, { size: 8, color: MUTED });
+  // ---------- Nota de lectura ----------
+  t(doc, 'Entrega = actividades realizadas entre actividades totales.  Estado = según el promedio de calificaciones de la materia (lo no entregado cuenta como 0).', M, tableBottom + 11, { size: 6.4, color: MUTED, max: CW });
+
+  // ---------- Panorama de desempeño ----------
+  let ay = tableBottom + 26, finLista;
+  t(doc, 'Panorama de desempeño', M, ay + 6, { size: 10, bold: true, color: BRAND });
+  ay += 14; finLista = ay + 14;
+  const d = resumen.dist, totalD = resumen.totalAct;
+  if (!totalD) {
+    t(doc, 'Sin información que mostrar.', M, ay + 8, { size: 8, color: MUTED });
   } else {
-    const cap = Math.max(0, Math.floor((restante - 22) / 12.5));
-    const mostrar = alertas.slice(0, Math.min(cap, 10));
-    if (!mostrar.length) {
-      t(doc, `${alertas.length} actividad(es) calificadas por mejorar o críticas. Consulta el detalle en el portal del alumno.`, M, ay + 8, { size: 8, color: MUTED, max: CW });
-    } else {
-      mostrar.forEach((a, i) => {
-        const y = ay + i * 12.5, e = ESTADOS[a.estado];
-        if (i % 2 === 0) rect(doc, M, y - 1, CW, 12.5, '#f8fafc');
-        circle(doc, M + 8, y + 5.2, 2.6, e.dot);
-        t(doc, a.materia, M + 16, y + 5.2, { size: 7.4, bold: true, base: 'middle', max: 150 });
-        t(doc, a.actividad, M + 172, y + 5.2, { size: 7.4, color: TXT, base: 'middle', max: 228 });
-        t(doc, a.fecha || '', M + 410, y + 5.2, { size: 7, color: MUTED, base: 'middle', max: 70 });
-        pill(doc, fmtNota(a.calif), W - M - 24, y + 5.2, 34, 9.6, e, 6.6);
+    const segs = [['excelente', 'Excelentes', ESTADOS.excelente.dot], ['satisfactorio', 'Satisfactorias', ESTADOS.satisfactorio.dot], ['atencion', 'Por mejorar', ESTADOS.atencion.dot], ['critico', 'Críticas', ESTADOS.critico.dot], ['sinEntregar', 'Sin entregar', '#c5ced8']];
+    const bh = 14; let bx = M;
+    rect(doc, M, ay, CW, bh, '#e6edf3');
+    for (const [key, , col] of segs) {
+      const w = CW * d[key] / totalD; if (w <= 0) continue;
+      rect(doc, bx, ay, w, bh, col);
+      if (w >= 26) t(doc, `${Math.round(100 * d[key] / totalD)}%`, bx + w / 2, ay + bh / 2, { size: 6.8, bold: true, color: key === 'sinEntregar' || key === 'atencion' ? TXT : '#ffffff', align: 'center', base: 'middle' });
+      bx += w;
+    }
+    ay += bh + 10;
+    const lw = CW / 5;
+    segs.forEach(([key, et, col], i) => {
+      circle(doc, M + i * lw + 3, ay, 3, col);
+      t(doc, `${d[key]} ${et}`, M + i * lw + 10, ay, { size: 7.2, color: TXT, base: 'middle' });
+    });
+    ay += 12; finLista = ay;
+
+    // Fortalezas y áreas de oportunidad (por materia)
+    const fort = materias.filter(m => m.prom >= 8).sort((a, b) => b.prom - a.prom).slice(0, 3);
+    const opor = materias.filter(m => m.prom < 8).sort((a, b) => a.prom - b.prom).slice(0, 3);
+    const filas = Math.max(fort.length, opor.length, 1);
+    if (footTop - 6 - ay >= 16 + filas * 13) {
+      const cw2 = (CW - 16) / 2;
+      [['Fortalezas', fort, 'Aún sin materias en rango Satisfactorio o superior.', M, ESTADOS.excelente.txt], ['Áreas de oportunidad', opor, 'Ninguna materia en rango Crítico o Requiere atención.', M + cw2 + 16, ESTADOS.critico.txt]].forEach(([tit, arr, vacio, x0, col]) => {
+        t(doc, tit.toUpperCase(), x0, ay + 5, { size: 7, bold: true, color: col });
+        hline(doc, x0, x0 + cw2, ay + 9, col, 0.8);
+        if (!arr.length) t(doc, vacio, x0, ay + 22, { size: 7.2, color: MUTED, max: cw2 });
+        arr.forEach((m, i) => {
+          const y = ay + 15 + i * 13, e = ESTADOS[m.estado];
+          circle(doc, x0 + 4, y + 5, 2.6, e.dot);
+          t(doc, m.nombre, x0 + 12, y + 5, { size: 7.6, bold: true, base: 'middle', max: cw2 - (mostrarPromedio ? 120 : 96) });
+          if (mostrarPromedio) t(doc, fmtNota(m.prom), x0 + cw2 - 82, y + 5, { size: 7.6, bold: true, color: e.txt, align: 'right', base: 'middle' });
+          pill(doc, e.etiqueta, x0 + cw2 - 38, y + 5, 76, 10, e, 6.2);
+        });
       });
-      finLista = ay + mostrar.length * 12.5 + (alertas.length > mostrar.length ? 12 : 2);
-      if (alertas.length > mostrar.length) t(doc, `... y ${alertas.length - mostrar.length} actividad(es) más en el portal del alumno.`, M + 16, ay + mostrar.length * 12.5 + 8, { size: 7, color: MUTED });
+      finLista = ay + 16 + filas * 13;
     }
   }
 

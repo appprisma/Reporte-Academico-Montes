@@ -2,9 +2,9 @@ import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/fireba
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
 import { getFirestore, collection, doc, getDoc, getDocs, setDoc, deleteDoc, query, where, writeBatch, serverTimestamp, arrayUnion, getCountFromServer } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 import { CONFIG, BRIDGE_URL, ADMIN_EMAIL, DOMINIO } from './config.js';
-import { armarKardex, crearPDF, nombreArchivo, slug } from './kardex.js';
+import { armarKardex, crearPDF, nombreArchivo, slug, faltantesKardex } from './kardex.js';
 
-const APP_VERSION = '2026.11.14-r1';
+const APP_VERSION = '2026.11.15-r1';
 const app = initializeApp(CONFIG), auth = getAuth(app), db = getFirestore(app);
 const $ = id => document.getElementById(id), main = $('main');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -1178,18 +1178,29 @@ const descargarBlob = (blob, nombre) => {
 };
 
 async function vistaKardex() {
+  const esAdmin = me.rol === 'admin';
   let lista = [], sinPermiso = false;
   try { lista = (await getDocs(collection(db, 'alumnos'))).docs.map(d => ({ id: d.id, ...d.data() })); }
   catch (e) { sinPermiso = e?.code === 'permission-denied'; console.warn('No se pudo leer alumnos', e); }
   lista.sort((a, b) => sortText(a.nombre || a.correo || a.id, b.nombre || b.correo || b.id));
+  // Registro de lo ya generado (solo el admin lo consulta; directivos solo escriben).
+  const logMap = new Map();
+  if (esAdmin) { try { (await getDocs(collection(db, 'kardexLog'))).docs.forEach(d => logMap.set(d.id, d.data())); } catch (e) { console.warn('Sin lectura del registro', e); } }
+  const idDe = a => normEmail(a.correo || a.id);
+  const estadoDe = a => logMap.get(idDe(a))?.estado || 'falta';
+  const ETQ = { generado: 'Generados', falta: 'Faltan por generar', incompleto: 'Incompletos', descartado: 'Descartados' };
+  const ETQ1 = { generado: 'Generado', falta: 'Falta', incompleto: 'Incompleto', descartado: 'Descartado' };
+
   main.innerHTML = `<div class="section-head"><div><h2>Reportes PDF (kárdex)</h2><p>Genera el reporte académico de actividades para entregar a padres de familia: una sola hoja por alumno, lista para imprimir.</p></div></div>
     <div class="editor">
       ${sinPermiso ? '<p class="msg">Tu perfil no puede leer la lista de alumnos. Pide al administrador el privilegio de reportes PDF.</p>' : ''}
-      <div class="tools va-filtros"><input id="kxBuscar" placeholder="Buscar nombre, matrícula o correo..." autocomplete="off"><select id="kxGrado" aria-label="Grado"></select><select id="kxGrupo" aria-label="Grupo"></select></div>
+      ${esAdmin ? '<div id="kxStats"></div>' : ''}
+      <div class="tools va-filtros"><input id="kxBuscar" placeholder="Buscar nombre, matrícula o correo..." autocomplete="off"><select id="kxGrado" aria-label="Grado"></select><select id="kxGrupo" aria-label="Grupo"></select>${esAdmin ? `<select id="kxEstado" aria-label="Estado del reporte"><option value="">Todos los estados</option>${Object.entries(ETQ).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select>` : ''}</div>
       <div class="form-grid">
         <label>Periodo o ciclo (opcional, aparece en el encabezado)<input id="kxPeriodo" placeholder="Ej. Ciclo escolar 2026-2027 · Corte noviembre" maxlength="60"></label>
       </div>
       <div class="kx-opts">
+        <label class="kx-check"><input type="checkbox" id="kxOmitir" checked> Omitir alumnos sin calificaciones</label>
         <label class="kx-check"><input type="checkbox" id="kxProm"> Mostrar promedio numérico por materia</label>
         <label class="kx-check"><input type="checkbox" id="kxFirmas" checked> Incluir observaciones y líneas de firma</label>
       </div>
@@ -1200,73 +1211,114 @@ async function vistaKardex() {
         <button id="kxRefrescar" type="button">Actualizar datos</button>
       </div>
       <p class="msg" id="kxMsg" hidden></p>
+      <div id="kxResultado"></div>
       <div class="va-lista" id="kxLista"></div>
     </div>`;
   const MAX = 150;
   const filtro = () => ({ term: $('kxBuscar').value.trim(), grado: $('kxGrado').value, grupo: $('kxGrupo').value });
-  const visibles = () => lista.filter(a => coincideAlumno(a, filtro()));
+  const base = () => lista.filter(a => coincideAlumno(a, filtro()));
+  const visibles = () => { const e = esAdmin ? $('kxEstado').value : ''; return e ? base().filter(a => estadoDe(a) === e) : base(); };
   const msg = (t, err = false) => { const m = $('kxMsg'); m.hidden = !t; m.textContent = t || ''; m.style.color = err ? '' : 'var(--brand)'; };
   const ocupado = v => ['kxGrupoPdf', 'kxZip', 'kxRefrescar'].forEach(id => $(id).disabled = v);
+
+  const pintarStats = () => {
+    if (!esAdmin) return;
+    const b = base(), c = { generado: 0, falta: 0, incompleto: 0, descartado: 0 };
+    b.forEach(a => c[estadoDe(a)]++);
+    const hechos = c.generado + c.incompleto, pct = b.length ? Math.round(hechos / b.length * 100) : 0, sel = $('kxEstado').value;
+    $('kxStats').innerHTML = `<div class="kx-stats">${['generado', 'falta', 'incompleto', 'descartado'].map(k => `<button type="button" class="kx-stat kx-s-${k} ${sel === k ? 'on' : ''}" data-est="${k}"><b>${c[k]}</b><span>${ETQ[k]}</span></button>`).join('')}</div>
+      <div class="kx-prog" title="${pct}%"><i style="width:${pct}%"></i></div>
+      <p class="filtro-cuenta">${hechos} de ${b.length} alumnos con PDF generado (${pct}%). Toca una tarjeta para ver solo ese grupo de alumnos y volver a generar su PDF. Las estadísticas siguen los filtros de grado y grupo.</p>`;
+  };
   const pintar = () => {
     const hits = visibles();
     $('kxCuenta').textContent = lista.length ? `${hits.length} de ${lista.length} alumnos${hits.length > MAX ? ` · mostrando los primeros ${MAX} (el PDF incluye a todos los ${hits.length})` : ''}` : '';
-    $('kxLista').innerHTML = hits.slice(0, MAX).map(a => `<div class="va-item kx-row"><strong>${esc(a.nombre || a.correo || a.id)}</strong><span>${esc(a.correo || a.id)}</span><small>${esc([a.matricula, ...gruposAlumno(a)].filter(Boolean).join(' · '))}</small><button type="button" data-kx="${esc(a.id)}">PDF</button></div>`).join('')
-      || `<div class="empty">${lista.length ? 'Ningún alumno coincide con la búsqueda.' : 'No hay alumnos registrados.'}</div>`;
+    $('kxLista').innerHTML = hits.slice(0, MAX).map(a => {
+      const st = estadoDe(a), lg = logMap.get(idDe(a));
+      const mot = (lg?.motivos || []).join(' · ');
+      const badge = esAdmin ? `<em class="kx-badge kx-b-${st}" title="${esc(mot)}">${ETQ1[st]}</em>` : '';
+      return `<div class="va-item kx-row ${esAdmin ? 'kx-adm' : ''}"><div><strong>${esc(a.nombre || a.correo || a.id)}</strong>${mot && st !== 'generado' ? `<small class="kx-mot">${esc(mot)}</small>` : ''}</div><span>${esc(a.correo || a.id)}</span><small>${esc([a.matricula, ...gruposAlumno(a)].filter(Boolean).join(' · '))}</small>${badge}<button type="button" data-kx="${esc(a.id)}">PDF</button></div>`;
+    }).join('') || `<div class="empty">${lista.length ? 'Ningún alumno coincide con los filtros.' : 'No hay alumnos registrados.'}</div>`;
+    pintarStats();
   };
   enlazarFiltrosAlumnos(lista, $('kxGrado'), $('kxGrupo'), pintar);
-  $('kxBuscar').oninput = pintar; pintar();
-  $('kxRefrescar').onclick = () => { kxCache.filas.clear(); kxCache.docentes = null; msg('Datos actualizados. Se volverán a leer al generar.'); };
+  $('kxBuscar').oninput = pintar;
+  if (esAdmin) {
+    $('kxEstado').onchange = pintar;
+    $('kxStats').onclick = e => { const b = e.target.closest('[data-est]'); if (!b) return; $('kxEstado').value = $('kxEstado').value === b.dataset.est ? '' : b.dataset.est; pintar(); };
+  }
+  pintar();
+  $('kxRefrescar').onclick = () => { kxCache.filas.clear(); kxCache.docentes = null; msg('Datos actualizados. Se volverán a leer las calificaciones al generar.'); };
 
-  // Arma los kárdex de una lista de alumnos (lee calificaciones por lotes).
   const armar = async alumnos => {
-    const correos = alumnos.map(a => normEmail(a.correo || a.id));
+    const correos = alumnos.map(idDe);
     const [docentes] = await Promise.all([docentesKx(), filasKx(correos, (i, n) => msg(`Leyendo calificaciones… ${i} de ${n} alumnos`))]);
-    return alumnos.map(a => armarKardex(a, kxCache.filas.get(normEmail(a.correo || a.id)) || [], docentes));
+    return alumnos.map(a => armarKardex(a, kxCache.filas.get(idDe(a)) || [], docentes));
   };
   const opciones = async () => ({ logo: await logoPDF(), periodo: $('kxPeriodo').value.trim(), mostrarPromedio: $('kxProm').checked, firmas: $('kxFirmas').checked });
   const etiquetaGrupo = () => $('kxGrupo').value || ($('kxGrado').value ? `${$('kxGrado').value}-grado` : 'todos');
-  const correr = async fn => { ocupado(true); try { await fn(); } catch (e) { console.error('Kárdex', e); msg(`No se pudo generar: ${e.code || ''} ${e.message || ''}`.trim(), true); } finally { ocupado(false); } };
 
-  // Individual
-  $('kxLista').onclick = e => {
-    const b = e.target.closest('[data-kx]'); if (!b) return;
-    const a = lista.find(x => x.id === b.dataset.kx); if (!a) return;
-    correr(async () => {
-      msg('Generando PDF…');
-      const [JsPDF, ops] = await Promise.all([libPDF(), opciones()]);
-      const [k] = await armar([a]);
-      const doc = crearPDF(JsPDF, [k], ops);
-      descargarBlob(doc.output('blob'), nombreArchivo(k));
-      msg(`Listo: ${k.perfil.nombre}.`);
-    });
+  // Guarda en Firestore qué quedó generado, incompleto o descartado (para la estadística del admin).
+  const registrar = async (validos, descartados, modo, etiqueta) => {
+    const items = [
+      ...validos.map(k => { const motivos = faltantesKardex(k); return { k, estado: motivos.length ? 'incompleto' : 'generado', motivos }; }),
+      ...descartados.map(k => ({ k, estado: 'descartado', motivos: ['Sin calificaciones registradas'] }))
+    ];
+    try {
+      for (let i = 0; i < items.length; i += 400) {
+        const b = writeBatch(db);
+        items.slice(i, i + 400).forEach(({ k, estado, motivos }) => {
+          const id = normEmail(k.perfil.correo);
+          b.set(doc(db, 'kardexLog', id), { correo: id, nombre: k.perfil.nombre, matricula: k.perfil.matricula, grupos: [k.perfil.grupoEs, k.perfil.grupoEn].filter(Boolean), estado, motivos, materias: k.resumen.materias, actividades: k.resumen.totalAct, entregadas: k.resumen.hechasAct, modo, etiqueta, por: me.email, fecha: serverTimestamp() });
+          if (esAdmin) logMap.set(id, { estado, motivos, nombre: k.perfil.nombre, fecha: new Date() });
+        });
+        await b.commit();
+      }
+    } catch (e) { console.warn('No se pudo guardar el registro', e); msg('El PDF se generó, pero no se pudo guardar el registro de estadística.', true); }
   };
-  // Grupo completo (un solo PDF, una hoja por alumno, orden alfabético)
-  $('kxGrupoPdf').onclick = () => correr(async () => {
-    const alumnos = visibles(); if (!alumnos.length) return msg('No hay alumnos con ese filtro.', true);
-    if (alumnos.length > 60 && !confirm(`Se generarán ${alumnos.length} hojas. ¿Continuar?`)) return;
-    const [JsPDF, ops] = await Promise.all([libPDF(), opciones()]);
-    const ks = await armar(alumnos); msg('Generando PDF…');
-    const doc = crearPDF(JsPDF, ks, ops);
-    descargarBlob(doc.output('blob'), `Kardex_${slug(etiquetaGrupo())}_completo.pdf`);
-    msg(`Listo: ${ks.length} alumno(s), ${doc.getNumberOfPages()} hoja(s).`);
-  });
-  // ZIP: PDF del grupo + un PDF por alumno
-  $('kxZip').onclick = () => correr(async () => {
-    const alumnos = visibles(); if (!alumnos.length) return msg('No hay alumnos con ese filtro.', true);
-    if (alumnos.length > 60 && !confirm(`Se generarán ${alumnos.length} PDF individuales más el del grupo. ¿Continuar?`)) return;
-    const [JsPDF, JSZip, ops] = await Promise.all([libPDF(), libZip(), opciones()]);
-    const ks = await armar(alumnos), zip = new JSZip(), g = slug(etiquetaGrupo());
-    zip.file(`Kardex_${g}_completo.pdf`, crearPDF(JsPDF, ks, ops).output('arraybuffer'));
-    const usados = new Set();
-    ks.forEach((k, i) => {
-      msg(`Generando individuales… ${i + 1} de ${ks.length}`);
-      let nom = nombreArchivo(k); if (usados.has(nom)) nom = nom.replace('.pdf', `_${i + 1}.pdf`); usados.add(nom);
-      zip.folder('Individuales').file(nom, crearPDF(JsPDF, [k], ops).output('arraybuffer'));
-    });
-    msg('Comprimiendo…');
-    descargarBlob(await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' }), `Kardex_${g}.zip`);
-    msg(`Listo: ZIP con el PDF del grupo y ${ks.length} individual(es).`);
-  });
+  const resumenHtml = (validos, descartados) => {
+    const inc = validos.map(k => ({ k, m: faltantesKardex(k) })).filter(x => x.m.length);
+    const li = (n, m) => `<li><b>${esc(n)}</b>${m ? ` <small>· ${esc(m)}</small>` : ''}</li>`;
+    return `<div class="kx-res"><b>Resultado:</b> ${validos.length - inc.length} completos · ${inc.length} incompletos · ${descartados.length} descartados (sin calificaciones)
+      ${inc.length ? `<details><summary>Incompletos (${inc.length}): se generaron, pero conviene volver a crearlos cuando haya más datos</summary><ul>${inc.map(x => li(x.k.perfil.nombre, x.m.join(' · '))).join('')}</ul></details>` : ''}
+      ${descartados.length ? `<details><summary>Descartados (${descartados.length}): no se generó su hoja</summary><ul>${descartados.map(k => li(k.perfil.nombre, k.perfil.correo)).join('')}</ul><p class="filtro-cuenta">Si deberían tener calificaciones, revisa que su correo en el Excel de alumnos sea el mismo que traen los reportes de los profesores.</p></details>` : ''}</div>`;
+  };
+
+  // modo: 'uno' | 'grupo' | 'zip'
+  const procesar = async (alumnos, modo) => {
+    ocupado(true); $('kxResultado').innerHTML = '';
+    try {
+      if (!alumnos.length) return msg('No hay alumnos con ese filtro.', true);
+      if (modo !== 'uno' && alumnos.length > 60 && !confirm(`Se procesarán ${alumnos.length} alumnos. ¿Continuar?`)) return msg('');
+      const [JsPDF, ops] = await Promise.all([libPDF(), opciones()]);
+      const JSZip = modo === 'zip' ? await libZip() : null;
+      const ks = await armar(alumnos), omitir = $('kxOmitir').checked;
+      const validos = ks.filter(k => !omitir || k.resumen.totalAct > 0), descartados = ks.filter(k => omitir && !k.resumen.totalAct);
+      const g = slug(etiquetaGrupo());
+      if (!validos.length) msg('Ninguno de los alumnos tiene calificaciones; no se generó ningún PDF.', true);
+      else if (modo === 'uno') { descargarBlob(crearPDF(JsPDF, validos, ops).output('blob'), nombreArchivo(validos[0])); msg(`Listo: ${validos[0].perfil.nombre}.`); }
+      else if (modo === 'grupo') { msg('Generando PDF…'); const d = crearPDF(JsPDF, validos, ops); descargarBlob(d.output('blob'), `Kardex_${g}_completo.pdf`); msg(`Listo: ${validos.length} alumno(s), ${d.getNumberOfPages()} hoja(s).`); }
+      else {
+        const zip = new JSZip(), usados = new Set();
+        zip.file(`Kardex_${g}_completo.pdf`, crearPDF(JsPDF, validos, ops).output('arraybuffer'));
+        validos.forEach((k, i) => {
+          msg(`Generando individuales… ${i + 1} de ${validos.length}`);
+          let nom = nombreArchivo(k); if (usados.has(nom)) nom = nom.replace('.pdf', `_${i + 1}.pdf`); usados.add(nom);
+          zip.folder('Individuales').file(nom, crearPDF(JsPDF, [k], ops).output('arraybuffer'));
+        });
+        msg('Comprimiendo…');
+        descargarBlob(await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' }), `Kardex_${g}.zip`);
+        msg(`Listo: ZIP con el PDF del grupo y ${validos.length} individual(es).`);
+      }
+      await registrar(validos, descartados, modo, etiquetaGrupo());
+      $('kxResultado').innerHTML = resumenHtml(validos, descartados);
+      pintar();
+    } catch (e) { console.error('Kárdex', e); msg(`No se pudo generar: ${e.code || ''} ${e.message || ''}`.trim(), true); }
+    finally { ocupado(false); }
+  };
+  $('kxLista').onclick = e => { const b = e.target.closest('[data-kx]'); const a = b && lista.find(x => x.id === b.dataset.kx); if (a) procesar([a], 'uno'); };
+  $('kxGrupoPdf').onclick = () => procesar(visibles(), 'grupo');
+  $('kxZip').onclick = () => procesar(visibles(), 'zip');
 }
 
 async function obtenerMisDatos(){
