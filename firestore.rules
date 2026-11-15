@@ -232,6 +232,14 @@ service cloud.firestore {
     }
 
     // ================================================================
+    // KARDEXLOG: registro de reportes PDF generados (estadística del admin)
+    // ================================================================
+    match /kardexLog/{id} {
+      allow read, delete: if admin();
+      allow create, update: if admin() || privilege('kardex');
+    }
+
+    // ================================================================
     // CALIFICACIONES
     // ================================================================
     match /calificaciones/{id} {
