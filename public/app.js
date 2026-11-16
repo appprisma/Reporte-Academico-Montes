@@ -777,6 +777,33 @@ function alumnoDup(r, existing) {
   const m = String(r.matricula||'').trim().toUpperCase(), c = normEmail(r.correo);
   return existing.some(x => (m && String(x.matricula||'').trim().toUpperCase() === m) || (c && normEmail(x.correo) === c));
 }
+// Nombre sin acentos/espacios dobles para comparar (último recurso de coincidencia).
+const normNombre = v => String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ').trim().toUpperCase();
+// Busca el alumno ya registrado (el que cargaron los reportes) al que corresponde una fila del Excel:
+// 1) correo, 2) matrícula, 3) nombre (solo si es único). Devuelve null si el alumno es nuevo.
+function alumnoExistente(r, existing) {
+  const c = normEmail(r.correo), m = String(r.matricula||'').trim().toUpperCase(), n = normNombre(r.nombre);
+  const idDe = x => normEmail(x.correo || x.id);
+  if (c) { const x = existing.find(x => idDe(x) === c); if (x) return x; }
+  if (m) { const x = existing.find(x => String(x.matricula||'').trim().toUpperCase() === m); if (x) return x; }
+  if (n) { const xs = existing.filter(x => normNombre(x.nombre) === n); if (xs.length === 1) return xs[0]; }
+  return null;
+}
+// Campos que el Excel completa en un alumno existente. Nunca pisa con vacío, y no cambia correo ni nombre ya registrados.
+const CAMPOS_ALUMNO = { matricula: 'matrícula', grupoEspanol: 'grupo español', grupoIngles: 'grupo inglés', tutor: 'tutor' };
+function alumnoCambios(r, ex) {
+  return Object.keys(CAMPOS_ALUMNO).filter(f => {
+    const nuevo = String(r[f] || '').trim().toUpperCase().replace(/\s+/g, ' ');
+    return nuevo && nuevo !== String(ex[f] || '').trim().toUpperCase().replace(/\s+/g, ' ');
+  });
+}
+function alumnoParaGuardar(r, ex) {
+  if (!ex) return r;
+  const out = { correo: normEmail(ex.correo || ex.id) };
+  if (!String(ex.nombre || '').trim()) out.nombre = r.nombre;
+  Object.keys(CAMPOS_ALUMNO).forEach(f => { if (String(r[f] || '').trim()) out[f] = r[f]; });
+  return out;
+}
 
 function renderBulkEditor(k, rows, existing) {
   const editor = $('bulkEditor');
@@ -786,7 +813,7 @@ function renderBulkEditor(k, rows, existing) {
   const labels = {matricula:'Matrícula',nombre:k.startsWith('asignaturas')?'Materia':'Nombre',correo:'Correo',grupoEspanol:'Grupo Español',grupoIngles:'Grupo Inglés',tutor:'Tutor',tipo:'Tipo',rol:'Rol',foto:'Foto URL'};
   const state = rows.slice(0, maxBulkRows(k)).map((r, i) => ({ ...r, _i: i, _remove: false }));
   const duplicateFor = r => {
-    if (k === 'alumnos') return alumnoDup(r, existing);
+    if (k === 'alumnos') return false; // un alumno existente se ACTUALIZA, no se bloquea
     if (k === 'docentes') return existing.some(x => normEmail(x.correo || x.id) === normEmail(r.correo));
     return existing.some(x => normalizarCatalogo(k, x.nombre) === normalizarCatalogo(k, r.nombre));
   };
@@ -795,15 +822,28 @@ function renderBulkEditor(k, rows, existing) {
     k === 'docentes' ? normEmail(x.correo) === normEmail(r.correo) :
     normalizarCatalogo(k, x.nombre) === normalizarCatalogo(k, r.nombre)
   ));
+  const estadoFila = r => {
+    const duplicatePaste = duplicatePasteFor(r), duplicateExisting = duplicateFor(r), duplicate = duplicateExisting || duplicatePaste;
+    if (duplicate) return { duplicate: true, html: `<span class="bulk-warning">⚠ ${esc(duplicateExisting ? 'YA EXISTE' : 'REPETIDA EN EL PEGADO/ARCHIVO')}</span>` };
+    if (k === 'alumnos') {
+      const ex = alumnoExistente(r, existing);
+      if (ex) {
+        const cambios = alumnoCambios(r, ex).map(f => CAMPOS_ALUMNO[f]);
+        return cambios.length
+          ? { duplicate: false, html: `<span class="bulk-ok">↻ ACTUALIZAR: ${esc(cambios.join(', '))}</span>` }
+          : { duplicate: false, html: '<span class="bulk-ok">= SIN CAMBIOS</span>' };
+      }
+    }
+    return { duplicate: false, html: '<span class="bulk-ok">✓ NUEVO' + (k==='alumnos' ? ' · LISTO' : '') + '</span>' };
+  };
   const body = () => state.filter(r => !r._remove).map(r => {
-    const duplicateExisting = duplicateFor(r), duplicatePaste = duplicatePasteFor(r), duplicate = duplicateExisting || duplicatePaste;
-    const motivo = duplicateExisting ? 'YA EXISTE' : (duplicatePaste ? 'REPETIDA EN EL PEGADO/ARCHIVO' : '');
+    const est = estadoFila(r), duplicate = est.duplicate;
     return `<tr class="bulk-row ${duplicate ? 'duplicate' : ''}" data-i="${r._i}">
       <td>${r._i + 1}</td>${fields.map(f => `<td>${f === 'tipo' ? (() => { const t0 = String(r.tipo || '').toUpperCase().replace('INGLÉS', 'INGLES'); return `<select class="bulk-input" data-f="tipo">${['ESPAÑOL', 'INGLES'].includes(t0) ? '' : '<option value="" selected>Selecciona</option>'}${['ESPAÑOL', 'INGLES'].map(o => `<option value="${o}" ${t0 === o ? 'selected' : ''}>${o}</option>`).join('')}</select>`; })() : `<input class="bulk-input" data-f="${f}" value="${esc(r[f] || '')}" ${f === 'rol' ? 'list="roles-docente"' : ''}>`}</td>`).join('')}
-      <td>${duplicate ? `<span class="bulk-warning">⚠ ${esc(motivo)}</span>` : '<span class="bulk-ok">✓ NUEVO' + (k==='alumnos' ? ' · LISTO' : '') + '</span>'}</td><td><button type="button" class="danger bulk-remove" data-i="${r._i}">Eliminar</button></td></tr>`;
+      <td>${est.html}</td><td><button type="button" class="danger bulk-remove" data-i="${r._i}">Eliminar</button></td></tr>`;
   }).join('');
   const colspan = fields.length + 3;
-  editor.innerHTML = `<div class="bulk-head"><div><h3>Revisar ${k==='docentes'?'docentes':k==='alumnos'?'alumnos':'filas'}</h3><p>Máximo ${maxBulkRows(k)} filas. ${state.filter(r => !r._remove).length} fila(s) listas para revisar. Las filas amarillas ya existen o están repetidas.</p></div><div class="actions"><button type="button" id="bulkCancelar">Cancelar</button><button type="button" class="p" id="bulkGuardar">CONFIRMAR Y GUARDAR TODO</button></div></div>
+  editor.innerHTML = `<div class="bulk-head"><div><h3>Revisar ${k==='docentes'?'docentes':k==='alumnos'?'alumnos':'filas'}</h3><p>Máximo ${maxBulkRows(k)} filas. ${state.filter(r => !r._remove).length} fila(s) listas para revisar. ${k==='alumnos' ? 'Los alumnos que ya existen se <b>actualizan</b> (se completan matrícula, grupos y tutor) sin duplicarse. Las filas amarillas están repetidas en el archivo.' : 'Las filas amarillas ya existen o están repetidas.'}</p></div><div class="actions"><button type="button" id="bulkCancelar">Cancelar</button><button type="button" class="p" id="bulkGuardar">CONFIRMAR Y GUARDAR TODO</button></div></div>
     ${k==='asignaturas' ? '<datalist id="tipos-materia"><option value="ESPAÑOL"><option value="INGLES"></datalist>' : ''}
     ${k==='docentes' ? '<datalist id="roles-docente"><option value="docente"><option value="directivo"><option value="admin"></datalist>' : ''}
     <div class="table-wrap"><table class="bulk-table"><thead><tr><th>#</th>${fields.map(f => `<th>${labels[f] || f}</th>`).join('')}<th>Estado</th><th>Acción</th></tr></thead><tbody>${body() || `<tr><td colspan="${colspan}" class="empty">No hay filas para guardar.</td></tr>`}</tbody></table></div>`;
@@ -812,31 +852,32 @@ function renderBulkEditor(k, rows, existing) {
     const r = state.find(x => String(x._i) === inp.closest('tr').dataset.i); if (!r) return;
     r[inp.dataset.f] = inp.value.trim();
     if (k === 'docentes' && inp.dataset.f === 'correo') r.correo = normEmail(r.correo);
-    const duplicate = duplicateFor(r) || duplicatePasteFor(r), tr = inp.closest('tr'), status = tr.querySelector('td:nth-last-child(2)');
-    tr.classList.toggle('duplicate', duplicate); status.innerHTML = duplicate ? '<span class="bulk-warning">⚠ DUPLICADO</span>' : '<span class="bulk-ok">✓ NUEVO</span>';
+    const est = estadoFila(r), tr = inp.closest('tr'), status = tr.querySelector('td:nth-last-child(2)');
+    tr.classList.toggle('duplicate', est.duplicate); status.innerHTML = est.html;
   });
   editor.querySelectorAll('.bulk-remove').forEach(btn => btn.onclick = () => { const r = state.find(x => String(x._i) === btn.dataset.i); if (r) r._remove = true; renderBulkEditor(k, state, existing); });
   $('bulkCancelar').onclick = () => { editor.hidden = true; };
   $('bulkGuardar').onclick = async () => {
     const valid = state.filter(r => !r._remove).map(r => k==='docentes' ? normalizarFilaDocente(r) : k==='alumnos' ? normalizarFilaAlumno(r) : r).filter(r => {
       if (k === 'docentes') return r.correo && r.nombre && r.rol;
-      if (k === 'alumnos') return r.matricula && r.nombre && r.correo;
+      if (k === 'alumnos') { const ex = alumnoExistente(r, existing); return ex ? true : (r.matricula && r.nombre && r.correo); }
       return r.nombre.trim();
     });
     if (!valid.length) return alert('No hay filas válidas para guardar.');
     const finalKeys = new Set();
     for (const r of valid) {
-      const key = k==='alumnos' ? alumnoClave(r) : k==='docentes' ? normEmail(r.correo) : normalizarCatalogo(k, r.nombre);
+      const exA = k==='alumnos' ? alumnoExistente(r, existing) : null;
+      const key = k==='alumnos' ? (exA ? 'EX|' + normEmail(exA.correo || exA.id) : alumnoClave(r)) : k==='docentes' ? normEmail(r.correo) : normalizarCatalogo(k, r.nombre);
       if (duplicateFor(r)) return alert(`La fila "${r.nombre || r.matricula || r.correo}" todavía está marcada como duplicada. Edítala o elimínala antes de guardar.`);
       if (finalKeys.has(key)) return alert(`La fila "${r.nombre || r.matricula || r.correo}" está repetida en el archivo. Edítala o elimínala antes de guardar.`);
       finalKeys.add(key);
       if (k === 'docentes' && !r.correo.endsWith('@' + DOMINIO)) return alert(`Correo inválido: ${r.correo}`);
       if (k === 'asignaturas' && !['ESPAÑOL', 'INGLES'].includes(String(r.tipo).toUpperCase())) return alert(`Tipo inválido en "${r.nombre}". Usa Español o Ingles.`);
-      if (k === 'alumnos' && !/^\S+@\S+\.\S+$/.test(r.correo)) return alert(`Correo inválido en la matrícula ${r.matricula}.`);
+      if (k === 'alumnos' && !exA && !/^\S+@\S+\.\S+$/.test(r.correo)) return alert(`Correo inválido en la matrícula ${r.matricula}.`);
       if (k === 'docentes' && r.rol === 'directivo') return alert(`La fila ${r.correo} es directivo. Para asignarle privilegios usa "Editar" en el perfil después de guardarlo.`);
     }
     $('bulkGuardar').disabled = true;
-    try { await guardar(TABS[k], valid); editor.hidden = true; vistaTab(k); }
+    try { await guardar(TABS[k], k==='alumnos' ? valid.map(r => alumnoParaGuardar(r, alumnoExistente(r, existing))) : valid); editor.hidden = true; vistaTab(k); }
     catch (e) { alert('No se pudieron guardar las filas: ' + e.message); $('bulkGuardar').disabled = false; }
   };
 }
