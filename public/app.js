@@ -1253,6 +1253,7 @@ async function vistaKardex() {
       <div class="actions">
         <button class="p" id="kxGrupoPdf" type="button">Descargar PDF del grupo (todos)</button>
         <button id="kxZip" type="button">Descargar ZIP (individuales + grupo)</button>
+        <button id="kxPreviewGrupo" type="button">Vista previa (lista filtrada)</button>
         <button id="kxRefrescar" type="button">Actualizar datos</button>
         ${esAdmin ? '<button id="kxMarcarVisibles" type="button" title="Marca como completos a todos los pendientes de la lista filtrada">✓ Marcar visibles como completos</button>' : ''}
       </div>
@@ -1265,7 +1266,7 @@ async function vistaKardex() {
   const base = () => lista.filter(a => coincideAlumno(a, filtro()));
   const visibles = () => { const e = esAdmin ? $('kxEstado').value : ''; return e ? base().filter(a => estadoDe(a) === e) : base(); };
   const msg = (t, err = false) => { const m = $('kxMsg'); m.hidden = !t; m.textContent = t || ''; m.style.color = err ? '' : 'var(--brand)'; };
-  const ocupado = v => ['kxGrupoPdf', 'kxZip', 'kxRefrescar', 'kxMarcarVisibles'].forEach(id => { if ($(id)) $(id).disabled = v; });
+  const ocupado = v => ['kxGrupoPdf', 'kxZip', 'kxRefrescar', 'kxMarcarVisibles', 'kxPreviewGrupo'].forEach(id => { if ($(id)) $(id).disabled = v; });
 
   const pintarStats = () => {
     if (!esAdmin) return;
@@ -1287,7 +1288,7 @@ async function vistaKardex() {
       const acciones = esAdmin ? (man
         ? `<button type="button" class="kx-undo" data-kxno="${esc(a.id)}" title="Regresa al estado que tenía antes de marcarlo">Quitar marca</button>`
         : (st !== 'generado' ? `<button type="button" class="kx-ok" data-kxok="${esc(a.id)}" title="Marcar como completo (se quita de incompletos)">✓ Completo</button>` : '')) : '';
-      return `<div class="va-item kx-row ${esAdmin ? 'kx-adm' : ''}"><div><strong>${esc(a.nombre || a.correo || a.id)}</strong>${mot && st !== 'generado' ? `<small class="kx-mot">${esc(mot)}</small>` : ''}</div><span>${esc(a.correo || a.id)}</span><small>${esc([a.matricula, ...gruposAlumno(a)].filter(Boolean).join(' · '))}</small>${badge}<div class="kx-acts">${acciones}<button type="button" data-kx="${esc(a.id)}">PDF</button></div></div>`;
+      return `<div class="va-item kx-row ${esAdmin ? 'kx-adm' : ''}"><div><strong>${esc(a.nombre || a.correo || a.id)}</strong>${mot && st !== 'generado' ? `<small class="kx-mot">${esc(mot)}</small>` : ''}</div><span>${esc(a.correo || a.id)}</span><small>${esc([a.matricula, ...gruposAlumno(a)].filter(Boolean).join(' · '))}</small>${badge}<div class="kx-acts">${acciones}<button type="button" class="kx-prev" data-kxv="${esc(a.id)}">Vista previa</button><button type="button" data-kx="${esc(a.id)}">PDF</button></div></div>`;
     }).join('') || `<div class="empty">${lista.length ? 'Ningún alumno coincide con los filtros.' : 'No hay alumnos registrados.'}</div>`;
     pintarStats();
   };
@@ -1369,6 +1370,45 @@ async function vistaKardex() {
     } catch (e) { console.error('Kárdex', e); msg(`No se pudo generar: ${e.code || ''} ${e.message || ''}`.trim(), true); }
     finally { ocupado(false); }
   };
+  // ----- Vista previa: genera el PDF en pantalla y solo se descarga (y se registra) si el usuario lo confirma -----
+  let kxPrevUrl = null;
+  const cerrarPrevia = () => { document.getElementById('kxPrevia')?.remove(); if (kxPrevUrl) { URL.revokeObjectURL(kxPrevUrl); kxPrevUrl = null; } document.removeEventListener('keydown', escPrevia); };
+  const escPrevia = e => { if (e.key === 'Escape') cerrarPrevia(); };
+  const vistaPrevia = async alumnos => {
+    ocupado(true); $('kxResultado').innerHTML = '';
+    try {
+      if (!alumnos.length) return msg('No hay alumnos con ese filtro.', true);
+      if (alumnos.length > 60 && !confirm(`Se procesarán ${alumnos.length} alumnos para la vista previa. ¿Continuar?`)) return msg('');
+      const [JsPDF, ops] = await Promise.all([libPDF(), opciones()]);
+      const ks = await armar(alumnos), omitir = $('kxOmitir').checked;
+      const validos = ks.filter(k => !omitir || k.resumen.totalAct > 0), descartados = ks.filter(k => omitir && !k.resumen.totalAct);
+      if (!validos.length) return msg('Ninguno de los alumnos tiene calificaciones; no hay nada que previsualizar.', true);
+      msg('Generando vista previa…');
+      const blob = crearPDF(JsPDF, validos, ops).output('blob');
+      const nombre = validos.length === 1 ? nombreArchivo(validos[0]) : `Kardex_${slug(etiquetaGrupo())}_completo.pdf`;
+      cerrarPrevia();
+      kxPrevUrl = URL.createObjectURL(blob);
+      const m = document.createElement('div'); m.id = 'kxPrevia'; m.className = 'kx-modal';
+      m.innerHTML = `<div class="kx-modal-box" role="dialog" aria-modal="true" aria-label="Vista previa del reporte">
+        <div class="kx-modal-head"><div><strong>Vista previa</strong><small>${esc(validos.length === 1 ? validos[0].perfil.nombre : `${validos.length} alumnos`)}</small></div>
+          <div class="kx-acts"><a class="button-file" href="${kxPrevUrl}" target="_blank" rel="noopener">Abrir en pestaña nueva</a><button type="button" class="p" id="kxPrevDescargar">Descargar PDF</button><button type="button" id="kxPrevCerrar">Cerrar</button></div></div>
+        <iframe class="kx-modal-frame" src="${kxPrevUrl}" title="Vista previa del reporte"></iframe></div>`;
+      document.body.appendChild(m);
+      document.addEventListener('keydown', escPrevia);
+      m.addEventListener('click', e => { if (e.target === m) cerrarPrevia(); });
+      $('kxPrevCerrar').onclick = cerrarPrevia;
+      $('kxPrevDescargar').onclick = async () => {
+        descargarBlob(blob, nombre);
+        await registrar(validos, descartados, validos.length === 1 ? 'uno' : 'grupo', etiquetaGrupo());
+        $('kxResultado').innerHTML = resumenHtml(validos, descartados);
+        cerrarPrevia(); pintar(); msg(`Listo: ${nombre}.`);
+      };
+      msg('');
+    } catch (e) { console.error('Vista previa', e); msg(`No se pudo generar la vista previa: ${e.code || ''} ${e.message || ''}`.trim(), true); }
+    finally { ocupado(false); }
+  };
+  $('kxPreviewGrupo').onclick = () => vistaPrevia(visibles());
+
   // ----- Marcado manual (solo admin): útil cuando el criterio de "completo" cambió y aún no está en la lógica -----
   const datosLog = a => ({ correo: idDe(a), nombre: a.nombre || '', matricula: a.matricula || '', grupos: gruposAlumno(a) });
   const marcarCompleto = async alumnos => {
@@ -1394,7 +1434,8 @@ async function vistaKardex() {
     catch (e) { console.error('Quitar marca', e); msg(`No se pudo quitar la marca: ${e.code || ''} ${e.message || ''}`.trim(), true); }
   };
   $('kxLista').onclick = e => {
-    const ok = e.target.closest('[data-kxok]'), no = e.target.closest('[data-kxno]'), b = e.target.closest('[data-kx]');
+    const ok = e.target.closest('[data-kxok]'), no = e.target.closest('[data-kxno]'), pv = e.target.closest('[data-kxv]'), b = e.target.closest('[data-kx]');
+    if (pv) { const a = lista.find(x => x.id === pv.dataset.kxv); if (a) vistaPrevia([a]); return; }
     if (ok) { const a = lista.find(x => x.id === ok.dataset.kxok); if (a) marcarCompleto([a]); return; }
     if (no) { const a = lista.find(x => x.id === no.dataset.kxno); if (a) quitarMarca(a); return; }
     const a = b && lista.find(x => x.id === b.dataset.kx); if (a) procesar([a], 'uno');
