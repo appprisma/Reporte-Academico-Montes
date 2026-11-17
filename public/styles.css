@@ -1451,3 +1451,8 @@ body:not(:has(#login)) .install-btn:hover{
 .kx-res{background:#f4f7fa;border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin:0 0 12px;font-size:13px}
 .kx-res details{margin-top:6px}.kx-res summary{cursor:pointer;font-weight:700}.kx-res ul{margin:6px 0 0 18px;padding:0}
 @media(max-width:700px){.kx-stats{grid-template-columns:repeat(2,1fr)}.kx-row.kx-adm{grid-template-columns:1fr}}
+
+/* Kárdex: acciones por alumno (marcado manual) */
+.kx-acts{display:flex;gap:6px;align-items:center;justify-content:flex-end;flex-wrap:wrap}
+.kx-row .kx-ok{background:#eaf8f2;color:#14805b;border:1px solid #c8ebdc}
+.kx-row .kx-undo{background:#fff;color:#667789;border:1px solid var(--border)}

@@ -925,16 +925,19 @@ async function vistaTab(k) {
   rows.sort((a,b)=>sortText(a[sortField],b[sortField]));
   const bulk=esCargaMasiva(k), alumnoBulk=k==='alumnos', docenteBulk=k==='docentes';
   main.innerHTML=`<div class="section-head"><div><h2>${t.n}</h2><p>${bulk ? (alumnoBulk ? 'Carga tu Excel o descarga la plantilla oficial. Revisa todos los alumnos antes de guardarlos.' : 'Agrega una por una o pega directamente varias filas copiadas de Google Sheets. Revisa todo antes de guardar.') : 'Agrega, edita y completa la información. Los cambios se guardan en Firestore.'}</p></div><div class="actions"><button class="p" id="nuevo">+ Nuevo</button>${alumnoBulk ? '<button id="plantillaAlumnos">DESCARGAR PLANTILLA EXCEL</button><label class="button-file" for="excelAlumnos">SUBIR EXCEL</label><input id="excelAlumnos" type="file" accept=".xlsx,.xls" hidden>' : bulk ? '<button id="pegarMasivo">Pegar desde Sheets</button>' : ''}</div></div>
-    ${bulk ? `<div id="bulkPaste" class="bulk-paste" hidden><label>${alumnoBulk ? 'También puedes pegar las 6 columnas desde Excel/Sheets' : docenteBulk ? 'Pega hasta 50 docentes desde Google Sheets' : 'Pega aquí las filas copiadas de Google Sheets'}<textarea id="pasteArea" rows="7" placeholder="${alumnoBulk ? 'MATRICULA<TAB>NOMBRE<TAB>CORREO<TAB>GRUPO ESPAÑOL<TAB>GRUPO INGLES<TAB>TUTOR' : docenteBulk ? 'CORREO<TAB>NOMBRE<TAB>ROL<TAB>FOTO URL\nprofesor@ibime.edu.mx<TAB>Nombre<TAB>docente' : k === 'asignaturas' ? 'Materia<TAB>Tipo\nMATEMÁTICAS<TAB>ESPAÑOL\nENGLISH<TAB>INGLES' : 'Grupo\n1A\n1B\n2A'}"></textarea></label><div class="actions"><button id="procesarPegado" class="p">PREVISUALIZAR FILAS</button><button id="cancelarPegado">Cancelar</button></div></div><div id="bulkEditor" class="editor" hidden></div>` : '<div id="editor" class="editor" hidden></div>'}
+    ${bulk ? `<div id="bulkPaste" class="bulk-paste" hidden><label>${alumnoBulk ? 'También puedes pegar las 6 columnas desde Excel/Sheets' : docenteBulk ? 'Pega hasta 50 docentes desde Google Sheets' : 'Pega aquí las filas copiadas de Google Sheets'}<textarea id="pasteArea" rows="7" placeholder="${alumnoBulk ? 'MATRICULA<TAB>NOMBRE<TAB>CORREO<TAB>GRUPO ESPAÑOL<TAB>GRUPO INGLES<TAB>TUTOR' : docenteBulk ? 'CORREO<TAB>NOMBRE<TAB>ROL<TAB>FOTO URL\nprofesor@ibime.edu.mx<TAB>Nombre<TAB>docente' : k === 'asignaturas' ? 'Materia<TAB>Tipo\nMATEMÁTICAS<TAB>ESPAÑOL\nENGLISH<TAB>INGLES' : 'Grupo\n1A\n1B\n2A'}"></textarea></label><div class="actions"><button id="procesarPegado" class="p">PREVISUALIZAR FILAS</button><button id="cancelarPegado">Cancelar</button></div></div><div id="bulkEditor" class="editor" hidden></div><div id="editor" class="editor" hidden></div>` : '<div id="editor" class="editor" hidden></div>'}
     <div class="tools"><input id="buscar" placeholder="${k==='alumnos' ? 'Buscar por nombre, matrícula, correo o tutor...' : 'Buscar...'}">${k==='alumnos' ? '<select id="fGrado" aria-label="Grado"></select><select id="fGrupo" aria-label="Grupo"></select>' : ''}<button id="recargar">Actualizar</button></div>${k==='alumnos' ? '<p class="filtro-cuenta" id="fCuenta"></p>' : ''}
     <div class="table-wrap catalog-table"><table><thead><tr>${t.f.map(f=>`<th>${f}</th>`).join('')}<th>Acciones</th></tr></thead><tbody>${rows.map(r=>`<tr${k==='alumnos' ? ` data-i="${esc(r.id)}"` : ''}>${t.f.map(f=>`<td>${esc(Array.isArray(r[f])?r[f].join(', '):r[f])}</td>`).join('')}<td class="actions"><button data-edit="${esc(r.id)}">Editar</button><button class="danger" data-del="${esc(r.id)}">Borrar</button></td></tr>`).join('')||'<tr><td colspan="20" class="empty">No hay registros.</td></tr>'}</tbody></table></div>`;
 
   const editor=$('editor');
   const openEditor=(data={})=>{
     if (!editor) return;
+    const be=$('bulkEditor'); if(be) be.hidden=true;
+    // Alumnos creados desde los reportes pueden no traer el campo correo: el id del documento ES el correo.
+    if (k==='alumnos' && data.id) data={...data, correo: data.correo || data.id};
     editor.hidden=false;
     editor.innerHTML=`<h3>${data.id?'Editar':'Nueva'} ${t.n}</h3><div class="form-grid">${formFields(t,data)}</div><div class="actions"><button class="p" id="guardarForm">Guardar</button><button id="cancelarForm">Cancelar</button></div>`;
-    $('cancelarForm').onclick=()=>{editor.hidden=true};
+    $('cancelarForm').onclick=()=>{editor.hidden=true};editor.scrollIntoView({behavior:'smooth',block:'start'});
     $('guardarForm').onclick=async()=>{const o={_id:data.id||''};t.f.forEach(f=>{let v=$('n_'+f)?.value.trim()||'';if(f==='correo'||f==='docente')v=normEmail(v);if(f==='grupos')v=v.split(',').map(x=>x.trim()).filter(Boolean);o[f]=v;});if(t.fix)Object.assign(o,t.fix);if(k==='docentes'&&o.correo===ADMIN_EMAIL.toLowerCase())o.rol='admin';if(!o[t.key||t.f[0]]&&!t.key)return alert('Completa los campos obligatorios.');try{await guardar(t,[o]);editor.hidden=true;vistaTab(k);}catch(e){alert('No se pudo guardar: '+e.message);}};
   };
 
@@ -1229,6 +1232,7 @@ async function vistaKardex() {
   if (esAdmin) { try { (await getDocs(collection(db, 'kardexLog'))).docs.forEach(d => logMap.set(d.id, d.data())); } catch (e) { console.warn('Sin lectura del registro', e); } }
   const idDe = a => normEmail(a.correo || a.id);
   const estadoDe = a => logMap.get(idDe(a))?.estado || 'falta';
+  const esManual = a => !!logMap.get(idDe(a))?.manual;
   const ETQ = { generado: 'Generados', falta: 'Faltan por generar', incompleto: 'Incompletos', descartado: 'Descartados' };
   const ETQ1 = { generado: 'Generado', falta: 'Falta', incompleto: 'Incompleto', descartado: 'Descartado' };
 
@@ -1250,6 +1254,7 @@ async function vistaKardex() {
         <button class="p" id="kxGrupoPdf" type="button">Descargar PDF del grupo (todos)</button>
         <button id="kxZip" type="button">Descargar ZIP (individuales + grupo)</button>
         <button id="kxRefrescar" type="button">Actualizar datos</button>
+        ${esAdmin ? '<button id="kxMarcarVisibles" type="button" title="Marca como completos a todos los pendientes de la lista filtrada">✓ Marcar visibles como completos</button>' : ''}
       </div>
       <p class="msg" id="kxMsg" hidden></p>
       <div id="kxResultado"></div>
@@ -1260,7 +1265,7 @@ async function vistaKardex() {
   const base = () => lista.filter(a => coincideAlumno(a, filtro()));
   const visibles = () => { const e = esAdmin ? $('kxEstado').value : ''; return e ? base().filter(a => estadoDe(a) === e) : base(); };
   const msg = (t, err = false) => { const m = $('kxMsg'); m.hidden = !t; m.textContent = t || ''; m.style.color = err ? '' : 'var(--brand)'; };
-  const ocupado = v => ['kxGrupoPdf', 'kxZip', 'kxRefrescar'].forEach(id => $(id).disabled = v);
+  const ocupado = v => ['kxGrupoPdf', 'kxZip', 'kxRefrescar', 'kxMarcarVisibles'].forEach(id => { if ($(id)) $(id).disabled = v; });
 
   const pintarStats = () => {
     if (!esAdmin) return;
@@ -1277,8 +1282,12 @@ async function vistaKardex() {
     $('kxLista').innerHTML = hits.slice(0, MAX).map(a => {
       const st = estadoDe(a), lg = logMap.get(idDe(a));
       const mot = (lg?.motivos || []).join(' · ');
-      const badge = esAdmin ? `<em class="kx-badge kx-b-${st}" title="${esc(mot)}">${ETQ1[st]}</em>` : '';
-      return `<div class="va-item kx-row ${esAdmin ? 'kx-adm' : ''}"><div><strong>${esc(a.nombre || a.correo || a.id)}</strong>${mot && st !== 'generado' ? `<small class="kx-mot">${esc(mot)}</small>` : ''}</div><span>${esc(a.correo || a.id)}</span><small>${esc([a.matricula, ...gruposAlumno(a)].filter(Boolean).join(' · '))}</small>${badge}<button type="button" data-kx="${esc(a.id)}">PDF</button></div>`;
+      const man = esManual(a);
+      const badge = esAdmin ? `<em class="kx-badge kx-b-${st}" title="${esc(man ? 'Marcado como completo manualmente' : mot)}">${ETQ1[st]}${man ? ' (manual)' : ''}</em>` : '';
+      const acciones = esAdmin ? (man
+        ? `<button type="button" class="kx-undo" data-kxno="${esc(a.id)}" title="Regresa al estado que tenía antes de marcarlo">Quitar marca</button>`
+        : (st !== 'generado' ? `<button type="button" class="kx-ok" data-kxok="${esc(a.id)}" title="Marcar como completo (se quita de incompletos)">✓ Completo</button>` : '')) : '';
+      return `<div class="va-item kx-row ${esAdmin ? 'kx-adm' : ''}"><div><strong>${esc(a.nombre || a.correo || a.id)}</strong>${mot && st !== 'generado' ? `<small class="kx-mot">${esc(mot)}</small>` : ''}</div><span>${esc(a.correo || a.id)}</span><small>${esc([a.matricula, ...gruposAlumno(a)].filter(Boolean).join(' · '))}</small>${badge}<div class="kx-acts">${acciones}<button type="button" data-kx="${esc(a.id)}">PDF</button></div></div>`;
     }).join('') || `<div class="empty">${lista.length ? 'Ningún alumno coincide con los filtros.' : 'No hay alumnos registrados.'}</div>`;
     pintarStats();
   };
@@ -1310,15 +1319,18 @@ async function vistaKardex() {
         const b = writeBatch(db);
         items.slice(i, i + 400).forEach(({ k, estado, motivos }) => {
           const id = normEmail(k.perfil.correo);
-          b.set(doc(db, 'kardexLog', id), { correo: id, nombre: k.perfil.nombre, matricula: k.perfil.matricula, grupos: [k.perfil.grupoEs, k.perfil.grupoEn].filter(Boolean), estado, motivos, materias: k.resumen.materias, actividades: k.resumen.totalAct, entregadas: k.resumen.hechasAct, modo, etiqueta, por: me.email, fecha: serverTimestamp() });
-          if (esAdmin) logMap.set(id, { estado, motivos, nombre: k.perfil.nombre, fecha: new Date() });
+          const manual = !!logMap.get(id)?.manual; // si lo marcaste completo a mano, regenerar el PDF no lo regresa a incompleto
+          const dato = { correo: id, nombre: k.perfil.nombre, matricula: k.perfil.matricula, grupos: [k.perfil.grupoEs, k.perfil.grupoEn].filter(Boolean), estado: manual ? 'generado' : estado, motivos: manual ? [] : motivos, materias: k.resumen.materias, actividades: k.resumen.totalAct, entregadas: k.resumen.hechasAct, modo, etiqueta, por: me.email, fecha: serverTimestamp() };
+          if (manual) { dato.estadoAuto = estado; dato.motivosAuto = motivos; }
+          b.set(doc(db, 'kardexLog', id), dato, { merge: true });
+          if (esAdmin) logMap.set(id, { ...(logMap.get(id) || {}), ...dato, fecha: new Date() });
         });
         await b.commit();
       }
     } catch (e) { console.warn('No se pudo guardar el registro', e); msg('El PDF se generó, pero no se pudo guardar el registro de estadística.', true); }
   };
   const resumenHtml = (validos, descartados) => {
-    const inc = validos.map(k => ({ k, m: faltantesKardex(k) })).filter(x => x.m.length);
+    const inc = validos.map(k => ({ k, m: faltantesKardex(k) })).filter(x => x.m.length && !logMap.get(normEmail(x.k.perfil.correo))?.manual);
     const li = (n, m) => `<li><b>${esc(n)}</b>${m ? ` <small>· ${esc(m)}</small>` : ''}</li>`;
     return `<div class="kx-res"><b>Resultado:</b> ${validos.length - inc.length} completos · ${inc.length} incompletos · ${descartados.length} descartados (sin calificaciones)
       ${inc.length ? `<details><summary>Incompletos (${inc.length}): se generaron, pero conviene volver a crearlos cuando haya más datos</summary><ul>${inc.map(x => li(x.k.perfil.nombre, x.m.join(' · '))).join('')}</ul></details>` : ''}
@@ -1357,7 +1369,43 @@ async function vistaKardex() {
     } catch (e) { console.error('Kárdex', e); msg(`No se pudo generar: ${e.code || ''} ${e.message || ''}`.trim(), true); }
     finally { ocupado(false); }
   };
-  $('kxLista').onclick = e => { const b = e.target.closest('[data-kx]'); const a = b && lista.find(x => x.id === b.dataset.kx); if (a) procesar([a], 'uno'); };
+  // ----- Marcado manual (solo admin): útil cuando el criterio de "completo" cambió y aún no está en la lógica -----
+  const datosLog = a => ({ correo: idDe(a), nombre: a.nombre || '', matricula: a.matricula || '', grupos: gruposAlumno(a) });
+  const marcarCompleto = async alumnos => {
+    const items = alumnos.filter(a => estadoDe(a) !== 'generado');
+    if (!items.length) return msg('No hay alumnos pendientes que marcar.');
+    try {
+      for (let i = 0; i < items.length; i += 400) {
+        const b = writeBatch(db), parte = items.slice(i, i + 400), nuevos = [];
+        parte.forEach(a => {
+          const id = idDe(a), prev = logMap.get(id) || {};
+          const dato = { ...datosLog(a), estado: 'generado', motivos: [], manual: true, estadoAuto: prev.estado || 'falta', motivosAuto: prev.motivos || [], marcadoPor: me.email, marcadoFecha: serverTimestamp() };
+          b.set(doc(db, 'kardexLog', id), dato, { merge: true }); nuevos.push([id, { ...prev, ...dato, marcadoFecha: new Date() }]);
+        });
+        await b.commit(); nuevos.forEach(([id, d]) => logMap.set(id, d));
+      }
+      msg(`Marcado(s) como completo(s): ${items.length}.`); pintar();
+    } catch (e) { console.error('Marcar completo', e); msg(`No se pudo marcar: ${e.code || ''} ${e.message || ''}`.trim(), true); }
+  };
+  const quitarMarca = async a => {
+    const id = idDe(a), prev = logMap.get(id) || {};
+    const dato = { estado: prev.estadoAuto || 'falta', motivos: prev.motivosAuto || [], manual: false };
+    try { await setDoc(doc(db, 'kardexLog', id), dato, { merge: true }); logMap.set(id, { ...prev, ...dato }); msg('Marca manual quitada.'); pintar(); }
+    catch (e) { console.error('Quitar marca', e); msg(`No se pudo quitar la marca: ${e.code || ''} ${e.message || ''}`.trim(), true); }
+  };
+  $('kxLista').onclick = e => {
+    const ok = e.target.closest('[data-kxok]'), no = e.target.closest('[data-kxno]'), b = e.target.closest('[data-kx]');
+    if (ok) { const a = lista.find(x => x.id === ok.dataset.kxok); if (a) marcarCompleto([a]); return; }
+    if (no) { const a = lista.find(x => x.id === no.dataset.kxno); if (a) quitarMarca(a); return; }
+    const a = b && lista.find(x => x.id === b.dataset.kx); if (a) procesar([a], 'uno');
+  };
+  if (esAdmin) {
+    $('kxMarcarVisibles').onclick = () => {
+      const pend = visibles().filter(a => estadoDe(a) !== 'generado');
+      if (!pend.length) return msg('No hay alumnos pendientes en la lista actual.');
+      if (confirm(`¿Marcar como COMPLETOS a los ${pend.length} alumnos pendientes de la lista actual (según los filtros)?`)) marcarCompleto(pend);
+    };
+  }
   $('kxGrupoPdf').onclick = () => procesar(visibles(), 'grupo');
   $('kxZip').onclick = () => procesar(visibles(), 'zip');
 }
